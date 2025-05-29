@@ -1,17 +1,20 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,14 +22,19 @@ import (
 
 // Config holds all configuration for the HTTP client
 type Config struct {
-	URL             string            `json:"url"`
-	AuthToken       string            `json:"auth_token"`
-	Headers         map[string]string `json:"headers"`
-	OutputDirectory string            `json:"output_directory"`
-	MaxConcurrency  int               `json:"max_concurrency"`
-	Timeout         time.Duration     `json:"timeout"`
-	SeedMode        string            `json:"seed_mode"` // "random" or "static"
-	StaticSeed      int               `json:"static_seed"`
+	URL               string            `json:"url"`
+	AuthToken         string            `json:"auth_token"`
+	Headers           map[string]string `json:"headers"`
+	OutputDirectory   string            `json:"output_directory"`
+	MaxConcurrency    int               `json:"max_concurrency"`
+	Timeout           time.Duration     `json:"timeout"`
+	SeedMode          string            `json:"seed_mode"` // "random" or "static"
+	StaticSeed        int               `json:"static_seed"`
+	RequestsPerMinute int               `json:"requests_per_minute"` // Rate limit: requests per minute
+	RetryAttempts     int               `json:"retry_attempts"`      // Number of retry attempts for failed requests
+	InitialRetryDelay time.Duration     `json:"initial_retry_delay"` // Initial delay for exponential backoff
+	BackoffMultiplier float64           `json:"backoff_multiplier"`  // Multiplier for exponential backoff
+	MaxRetryDelay     time.Duration     `json:"max_retry_delay"`     // Maximum delay between retries
 }
 
 // ClientContext represents the client context in the payload
@@ -72,73 +80,210 @@ type APIResponse struct {
 	WorkflowID  string       `json:"workflowId"`
 }
 
+// RateLimiter manages request rate limiting with proper time-based control
+type RateLimiter struct {
+	requestsPerMinute int
+	requests          []time.Time
+	mu                sync.Mutex
+}
+
+// NewRateLimiter creates a new rate limiter
+func NewRateLimiter(requestsPerMinute int) *RateLimiter {
+	return &RateLimiter{
+		requestsPerMinute: requestsPerMinute,
+		requests:          make([]time.Time, 0, requestsPerMinute),
+	}
+}
+
+// Wait blocks until a request can be made within the rate limit
+func (rl *RateLimiter) Wait() {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+
+	// Remove requests older than 1 minute
+	cutoff := now.Add(-time.Minute)
+	validRequests := make([]time.Time, 0, len(rl.requests))
+	for _, reqTime := range rl.requests {
+		if reqTime.After(cutoff) {
+			validRequests = append(validRequests, reqTime)
+		}
+	}
+	rl.requests = validRequests
+
+	// If we've hit the rate limit, wait until the oldest request expires
+	if len(rl.requests) >= rl.requestsPerMinute {
+		oldestRequest := rl.requests[0]
+		waitUntil := oldestRequest.Add(time.Minute)
+		waitDuration := waitUntil.Sub(now)
+
+		if waitDuration > 0 {
+			fmt.Printf("Rate limit reached (%d/%d requests in last minute), waiting %v...\n",
+				len(rl.requests), rl.requestsPerMinute, waitDuration.Round(time.Second))
+			rl.mu.Unlock()
+			time.Sleep(waitDuration)
+			rl.mu.Lock()
+
+			// Clean up expired requests after waiting
+			now = time.Now()
+			cutoff = now.Add(-time.Minute)
+			validRequests = make([]time.Time, 0, len(rl.requests))
+			for _, reqTime := range rl.requests {
+				if reqTime.After(cutoff) {
+					validRequests = append(validRequests, reqTime)
+				}
+			}
+			rl.requests = validRequests
+		}
+	}
+
+	// Record this request
+	rl.requests = append(rl.requests, now)
+}
+
+// GetCurrentUsage returns current rate limit usage
+func (rl *RateLimiter) GetCurrentUsage() (int, int) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-time.Minute)
+	count := 0
+	for _, reqTime := range rl.requests {
+		if reqTime.After(cutoff) {
+			count++
+		}
+	}
+	return count, rl.requestsPerMinute
+}
+
 // HTTPClient wraps the configuration and provides methods for making requests
 type HTTPClient struct {
-	config     Config
-	httpClient *http.Client
-	rng        *rand.Rand
+	config      Config
+	httpClient  *http.Client
+	rng         *rand.Rand
+	rateLimiter *RateLimiter
 }
 
 // NewHTTPClient creates a new HTTP client with the given configuration
 func NewHTTPClient(config Config) *HTTPClient {
+	var rateLimiter *RateLimiter
+	if config.RequestsPerMinute > 0 {
+		rateLimiter = NewRateLimiter(config.RequestsPerMinute)
+	}
+
 	return &HTTPClient{
 		config: config,
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
 		},
-		rng: rand.New(rand.NewSource(time.Now().UnixNano())),
+		rng:         rand.New(rand.NewSource(time.Now().UnixNano())),
+		rateLimiter: rateLimiter,
 	}
 }
 
-// MakeRequest makes a single HTTP POST request with the given payload
+// MakeRequest makes a single HTTP POST request with the given payload, with retry logic
 func (c *HTTPClient) MakeRequest(payload RequestPayload) (*APIResponse, error) {
-	// Marshal payload to JSON
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+	var lastErr error
+
+	for attempt := 0; attempt <= c.config.RetryAttempts; attempt++ {
+		// Apply rate limiting if configured
+		if c.rateLimiter != nil {
+			c.rateLimiter.Wait()
+			current, max := c.rateLimiter.GetCurrentUsage()
+			fmt.Printf("Rate limit usage: %d/%d requests in last minute\n", current, max)
+		}
+
+		// Marshal payload to JSON
+		jsonData, err := json.Marshal(payload)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal payload: %w", err)
+		}
+
+		// Create HTTP request
+		req, err := http.NewRequest("POST", c.config.URL, bytes.NewBuffer(jsonData))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		// Set headers
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", c.config.AuthToken)
+
+		// Add custom headers
+		for key, value := range c.config.Headers {
+			req.Header.Set(key, value)
+		}
+
+		// Make the request
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to make request: %w", err)
+			if attempt < c.config.RetryAttempts {
+				c.waitWithBackoff(attempt)
+				continue
+			}
+			return nil, lastErr
+		}
+		defer resp.Body.Close()
+
+		// Handle rate limiting (429) and server errors (5xx) with retry
+		if resp.StatusCode == 429 || (resp.StatusCode >= 500 && resp.StatusCode < 600) {
+			body, _ := io.ReadAll(resp.Body)
+			lastErr = fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(body))
+
+			if attempt < c.config.RetryAttempts {
+				fmt.Printf("Request failed with status %d, retrying in %v (attempt %d/%d)...\n",
+					resp.StatusCode, c.calculateBackoffDelay(attempt), attempt+1, c.config.RetryAttempts+1)
+				c.waitWithBackoff(attempt)
+				continue
+			}
+			return nil, lastErr
+		}
+
+		// Check for other error status codes (don't retry client errors except 429)
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return nil, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(body))
+		}
+
+		// Read and parse successful response
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read response body: %w", err)
+			if attempt < c.config.RetryAttempts {
+				c.waitWithBackoff(attempt)
+				continue
+			}
+			return nil, lastErr
+		}
+
+		var apiResponse APIResponse
+		err = json.Unmarshal(body, &apiResponse)
+		if err != nil {
+			return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+		}
+
+		return &apiResponse, nil
 	}
 
-	// Create HTTP request
-	req, err := http.NewRequest("POST", c.config.URL, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	return nil, fmt.Errorf("max retry attempts exceeded: %w", lastErr)
+}
+
+// calculateBackoffDelay calculates the delay for exponential backoff
+func (c *HTTPClient) calculateBackoffDelay(attempt int) time.Duration {
+	delay := time.Duration(float64(c.config.InitialRetryDelay) * math.Pow(c.config.BackoffMultiplier, float64(attempt)))
+	if delay > c.config.MaxRetryDelay {
+		delay = c.config.MaxRetryDelay
 	}
+	return delay
+}
 
-	// Set headers
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", c.config.AuthToken)
-
-	// Add custom headers
-	for key, value := range c.config.Headers {
-		req.Header.Set(key, value)
-	}
-
-	// Make the request
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to make request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Check status code
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	// Read and parse response
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
-	}
-
-	var apiResponse APIResponse
-	err = json.Unmarshal(body, &apiResponse)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	return &apiResponse, nil
+// waitWithBackoff waits with exponential backoff
+func (c *HTTPClient) waitWithBackoff(attempt int) {
+	delay := c.calculateBackoffDelay(attempt)
+	time.Sleep(delay)
 }
 
 // SaveImage decodes base64 image data and saves it as a JPG file
@@ -190,13 +335,14 @@ type RequestJob struct {
 	Payload RequestPayload
 }
 
-// MakeConcurrentRequests makes multiple requests concurrently
+// MakeConcurrentRequests makes multiple requests concurrently with proper rate limiting
 func (c *HTTPClient) MakeConcurrentRequests(jobs []RequestJob) error {
 	// Create a semaphore to limit concurrency
 	semaphore := make(chan struct{}, c.config.MaxConcurrency)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var errors []error
+	var completed int
 
 	for _, job := range jobs {
 		wg.Add(1)
@@ -209,7 +355,7 @@ func (c *HTTPClient) MakeConcurrentRequests(jobs []RequestJob) error {
 
 			fmt.Printf("Starting request %s with seed %d\n", j.ID, j.Payload.Seed)
 
-			// Make the request
+			// Make the request (with built-in rate limiting and retries)
 			response, err := c.MakeRequest(j.Payload)
 			if err != nil {
 				mu.Lock()
@@ -227,7 +373,10 @@ func (c *HTTPClient) MakeConcurrentRequests(jobs []RequestJob) error {
 				return
 			}
 
-			fmt.Printf("Completed request %s\n", j.ID)
+			mu.Lock()
+			completed++
+			fmt.Printf("Completed request %s (%d/%d)\n", j.ID, completed, len(jobs))
+			mu.Unlock()
 		}(job)
 	}
 
@@ -357,28 +506,130 @@ func (c *HTTPClient) CreateJobsFromPrompts(prompts []string, options map[string]
 	return jobs
 }
 
-func main() {
-	// Configuration
-	config := Config{
-		URL:       "https://aisandbox-pa.googleapis.com/v1/whisk:generateImage",
-		AuthToken: "Bearer ya29.a0AW4Xtxgia6SvOFRR3a0cFo8--bA7l0TWaKoiTe57uFRo8SJYlJ7xjpOea9NgZjb8s7mW0DUctXvv23BTKio-fXnGluFTLHz4Mk-sgDxdrWQIQ-cJGjr4egeT7_G6K5DedLuge7ilBmuhFhuOpAavf5B32SWYBOReQFWi55g3xIRohMfXJ724OCGxViGmjUoafRMAQskedy4cCik5UW5qcYCM728J4rWd_Bd0yG-b6YL1Q9XbYr2alwbP_Xr_ihBIqVJJoRea14x7xolnWqRkFhAx9P504FvmWb3HKsuviiav0UhEs1OePEFf8-0LAz5lIVMjEF3SoxGqTx6YrpA5SV_iovsnrTi1EsjCcGHohdxEvqQfrlw4t-thSbmPsMUZfOwmrXCMVxaPQHtXzFnEXtIg8Ixd5Twnhlqx6pHc-QaCgYKAXwSARMSFQHGX2MiuYUa90u3T2SoUnR3H5y7yA0433",
+// LoadEnv loads environment variables from a .env file
+func LoadEnv(filename string) error {
+	file, err := os.Open(filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Printf("Warning: %s file not found, using default values\n", filename)
+			return nil
+		}
+		return fmt.Errorf("failed to open %s: %w", filename, err)
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
+		// Skip empty lines and comments
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// Parse key=value pairs
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+
+		// Remove quotes if present
+		if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') ||
+			(value[0] == '\'' && value[len(value)-1] == '\'')) {
+			value = value[1 : len(value)-1]
+		}
+
+		os.Setenv(key, value)
+	}
+
+	return scanner.Err()
+}
+
+// GetEnv gets an environment variable with a default value
+func GetEnv(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+// GetEnvInt gets an environment variable as integer with a default value
+func GetEnvInt(key string, defaultValue int) int {
+	if value := os.Getenv(key); value != "" {
+		if intValue, err := strconv.Atoi(value); err == nil {
+			return intValue
+		}
+	}
+	return defaultValue
+}
+
+// GetEnvDuration gets an environment variable as duration with a default value
+func GetEnvDuration(key string, defaultValue time.Duration) time.Duration {
+	if value := os.Getenv(key); value != "" {
+		if duration, err := time.ParseDuration(value); err == nil {
+			return duration
+		}
+	}
+	return defaultValue
+}
+
+// GetEnvFloat gets an environment variable as float64 with a default value
+func GetEnvFloat(key string, defaultValue float64) float64 {
+	if value := os.Getenv(key); value != "" {
+		if floatValue, err := strconv.ParseFloat(value, 64); err == nil {
+			return floatValue
+		}
+	}
+	return defaultValue
+}
+
+// LoadConfigFromEnv loads configuration from environment variables
+func LoadConfigFromEnv() Config {
+	return Config{
+		URL:       GetEnv("API_URL", "https://aisandbox-pa.googleapis.com/v1/whisk:generateImage"),
+		AuthToken: GetEnv("API_AUTH_TOKEN", ""),
 		Headers: map[string]string{
-			"User-Agent": "Go HTTP Client",
-			"Accept":     "application/json",
+			"User-Agent": GetEnv("USER_AGENT", "Go HTTP Client"),
+			"Accept":     GetEnv("ACCEPT_HEADER", "application/json"),
 		},
-		OutputDirectory: "./generated_images",
-		MaxConcurrency:  5,
-		Timeout:         60 * time.Second,
-		SeedMode:        "random", // "random" or "static"
-		StaticSeed:      12345,    // Used when SeedMode is "static"
+		OutputDirectory:   GetEnv("OUTPUT_DIRECTORY", "./generated_images"),
+		MaxConcurrency:    GetEnvInt("MAX_CONCURRENCY", 2),
+		Timeout:           GetEnvDuration("TIMEOUT", 60*time.Second),
+		SeedMode:          GetEnv("SEED_MODE", "random"),
+		StaticSeed:        GetEnvInt("STATIC_SEED", 12345),
+		RequestsPerMinute: GetEnvInt("REQUESTS_PER_MINUTE", 15),
+		RetryAttempts:     GetEnvInt("RETRY_ATTEMPTS", 3),
+		InitialRetryDelay: GetEnvDuration("INITIAL_RETRY_DELAY", 2*time.Second),
+		BackoffMultiplier: GetEnvFloat("BACKOFF_MULTIPLIER", 2.0),
+		MaxRetryDelay:     GetEnvDuration("MAX_RETRY_DELAY", 30*time.Second),
+	}
+}
+
+func main() {
+	// Load environment variables from .env file
+	err := LoadEnv(".env")
+	if err != nil {
+		log.Printf("Warning: Failed to load .env file: %v", err)
+	}
+
+	// Load configuration from environment variables
+	config := LoadConfigFromEnv()
+
+	// Validate required configuration
+	if config.AuthToken == "" {
+		log.Fatal("API_AUTH_TOKEN is required. Please set it in your .env file or environment variables.")
 	}
 
 	// Create HTTP client
 	client := NewHTTPClient(config)
 
 	// Parse prompts from file
-	fmt.Println("Reading prompts from prompts.txt...")
-	prompts, err := ParsePromptsFromFile("image_prompts.txt")
+	promptsFile := GetEnv("PROMPTS_FILE", "image_prompts.txt")
+	fmt.Printf("Reading prompts from %s...\n", promptsFile)
+	prompts, err := ParsePromptsFromFile(promptsFile)
 	if err != nil {
 		log.Fatalf("Failed to parse prompts: %v", err)
 	}
@@ -390,21 +641,29 @@ func main() {
 
 	// Global options for all prompts
 	globalOptions := map[string]interface{}{
-		"imageModel":  "IMAGEN_3_5",
-		"aspectRatio": "IMAGE_ASPECT_RATIO_LANDSCAPE",
+		"imageModel":  GetEnv("IMAGE_MODEL", "IMAGEN_3_5"),
+		"aspectRatio": GetEnv("ASPECT_RATIO", "IMAGE_ASPECT_RATIO_LANDSCAPE"),
 	}
 
 	// Create jobs from prompts
 	jobs := client.CreateJobsFromPrompts(prompts, globalOptions)
 
-	// Make concurrent requests
-	fmt.Printf("\nMaking %d concurrent requests with %s seeds...\n", len(jobs), config.SeedMode)
+	// Make concurrent requests with rate limiting and retries
+	fmt.Printf("\nConfiguration:\n")
+	fmt.Printf("- Rate limit: %d requests per minute\n", config.RequestsPerMinute)
+	fmt.Printf("- Max concurrency: %d\n", config.MaxConcurrency)
+	fmt.Printf("- Retry attempts: %d\n", config.RetryAttempts)
+	fmt.Printf("- Output directory: %s\n", config.OutputDirectory)
+	fmt.Printf("\nMaking %d requests with rate limiting and retries...\n", len(jobs))
+
+	startTime := time.Now()
 	err = client.MakeConcurrentRequests(jobs)
 	if err != nil {
 		log.Fatalf("Concurrent requests failed: %v", err)
 	}
 
-	fmt.Println("All requests completed successfully!")
+	duration := time.Since(startTime)
+	fmt.Printf("All requests completed successfully in %v!\n", duration)
 }
 
 // LoadConfigFromFile loads configuration from a JSON file
