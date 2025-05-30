@@ -20,6 +20,10 @@ import (
 	"time"
 )
 
+const (
+	ASPECT_RATIO = "IMAGE_ASPECT_RATIO_LANDSCAPE" // Options: IMAGE_ASPECT_RATIO_LANDSCAPE, IMAGE_ASPECT_RATIO_PORTRAIT, IMAGE_ASPECT_RATIO_SQUARE
+)
+
 // Config holds all configuration for the HTTP client
 type Config struct {
 	URL               string            `json:"url"`
@@ -411,7 +415,7 @@ func CreateDefaultPayload(options map[string]interface{}) RequestPayload {
 		},
 		ImageModelSettings: ImageModelSettings{
 			ImageModel:  "IMAGEN_3_5",
-			AspectRatio: "IMAGE_ASPECT_RATIO_LANDSCAPE",
+			AspectRatio: ASPECT_RATIO,
 		},
 		Seed:          738224,
 		Prompt:        "A beautiful landscape",
@@ -642,7 +646,7 @@ func main() {
 	// Global options for all prompts
 	globalOptions := map[string]interface{}{
 		"imageModel":  GetEnv("IMAGE_MODEL", "IMAGEN_3_5"),
-		"aspectRatio": GetEnv("ASPECT_RATIO", "IMAGE_ASPECT_RATIO_LANDSCAPE"),
+		"aspectRatio": ASPECT_RATIO,
 	}
 
 	// Create jobs from prompts
