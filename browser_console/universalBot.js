@@ -25,7 +25,7 @@ function createUnifiedBotSystem(config = {}) {
             logVerbose: true
         },
         autoContinue: {
-            intervalMinutes: 5,
+            intervalMinutes: 1,
             continueText: 'CONTINUE',
             endCondition: 'End of script',
             minEndOccurrences: 3,

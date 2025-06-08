@@ -128,7 +128,7 @@
                         </div>
                         <div style="flex: 1;">
                             <label style="display: block; margin-bottom: 5px; font-weight: bold; font-size: 12px;">Interval (seconds):</label>
-                            <input id="interval-seconds" type="number" value="30" min="5" max="3600" style="
+                            <input id="interval-seconds" type="number" value="15" min="5" max="3600" style="
                                 width: 100%;
                                 padding: 6px;
                                 border: 1px solid #ccc;

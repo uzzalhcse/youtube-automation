@@ -39,6 +39,7 @@ type Config struct {
 	InitialRetryDelay time.Duration     `json:"initial_retry_delay"` // Initial delay for exponential backoff
 	BackoffMultiplier float64           `json:"backoff_multiplier"`  // Multiplier for exponential backoff
 	MaxRetryDelay     time.Duration     `json:"max_retry_delay"`     // Maximum delay between retries
+	Tool              string            `json:"tool"`                // "whisk" or "imagefx"
 }
 
 // ClientContext represents the client context in the payload
@@ -65,11 +66,15 @@ type RequestPayload struct {
 
 // GeneratedImage represents a single generated image in the response
 type GeneratedImage struct {
-	EncodedImage      string `json:"encodedImage"`
-	Seed              int    `json:"seed"`
-	MediaGenerationID string `json:"mediaGenerationId"`
-	Prompt            string `json:"prompt"`
-	ImageModel        string `json:"imageModel"`
+	EncodedImage           string `json:"encodedImage"`
+	Seed                   int    `json:"seed"`
+	MediaGenerationID      string `json:"mediaGenerationId"`
+	Prompt                 string `json:"prompt"`
+	ImageModel             string `json:"imageModel"`
+	IsMaskEditedImage      bool   `json:"isMaskEditedImage,omitempty"`
+	ModelNameType          string `json:"modelNameType,omitempty"`
+	WorkflowID             string `json:"workflowId,omitempty"`
+	FingerprintLogRecordID string `json:"fingerprintLogRecordId,omitempty"`
 }
 
 // ImagePanel represents an image panel in the response
@@ -98,6 +103,22 @@ type APIError struct {
 		Status  string      `json:"status"`
 		Details []ErrorInfo `json:"details"`
 	} `json:"error"`
+}
+type ImageFXUserInput struct {
+	CandidatesCount int      `json:"candidatesCount"`
+	Prompts         []string `json:"prompts"`
+	Seed            int      `json:"seed"`
+}
+
+type ImageFXModelInput struct {
+	ModelNameType string `json:"modelNameType"`
+}
+
+type ImageFXPayload struct {
+	UserInput     ImageFXUserInput  `json:"userInput"`
+	ClientContext ClientContext     `json:"clientContext"`
+	ModelInput    ImageFXModelInput `json:"modelInput"`
+	AspectRatio   string            `json:"aspectRatio"`
 }
 
 // isUnsafeGenerationError checks if the error is due to unsafe content policy violation
@@ -219,7 +240,8 @@ func NewHTTPClient(config Config) *HTTPClient {
 }
 
 // MakeRequest makes a single HTTP POST request with the given payload, with retry logic
-func (c *HTTPClient) MakeRequest(payload RequestPayload) (*APIResponse, error) {
+// MakeRequest makes a single HTTP POST request with the given payload, with retry logic
+func (c *HTTPClient) MakeRequest(payload interface{}) (*APIResponse, error) {
 	var lastErr error
 
 	for attempt := 0; attempt <= c.config.RetryAttempts; attempt++ {
@@ -230,14 +252,20 @@ func (c *HTTPClient) MakeRequest(payload RequestPayload) (*APIResponse, error) {
 			fmt.Printf("Rate limit usage: %d/%d requests in last minute\n", current, max)
 		}
 
+		// Determine URL based on tool configuration
+		url := c.config.URL
+		if c.config.Tool == "imagefx" {
+			url = "https://aisandbox-pa.googleapis.com/v1:runImageFx"
+		}
+
 		// Marshal payload to JSON
 		jsonData, err := json.Marshal(payload)
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal payload: %w", err)
 		}
 
-		// Create HTTP request
-		req, err := http.NewRequest("POST", c.config.URL, bytes.NewBuffer(jsonData))
+		// Create HTTP request with the determined URL
+		req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
@@ -353,10 +381,19 @@ func (c *HTTPClient) SaveImage(encodedImage, filename string) error {
 }
 
 // Helper function to get prompt by job ID
+// Helper function to get prompt by job ID
 func getPromptByJobID(jobs []RequestJob, jobID string) string {
 	for _, job := range jobs {
 		if job.ID == jobID {
-			return job.Payload.Prompt
+			// Handle different payload types
+			switch payload := job.Payload.(type) {
+			case RequestPayload:
+				return payload.Prompt
+			case ImageFXPayload:
+				if len(payload.UserInput.Prompts) > 0 {
+					return payload.UserInput.Prompts[0]
+				}
+			}
 		}
 	}
 	return "Unknown prompt"
@@ -381,7 +418,7 @@ func (c *HTTPClient) ProcessResponse(response *APIResponse, requestID string) er
 // RequestJob represents a single request job for concurrent processing
 type RequestJob struct {
 	ID      string
-	Payload RequestPayload
+	Payload interface{} // Changed from RequestPayload to interface{}
 }
 
 // JobResult represents the result of a job execution
@@ -403,6 +440,7 @@ func (c *HTTPClient) MakeConcurrentRequests(jobs []RequestJob) error {
 
 	for _, job := range jobs {
 		wg.Add(1)
+		// This is the section inside the goroutine that needs to be fixed
 		go func(j RequestJob) {
 			defer wg.Done()
 
@@ -410,7 +448,18 @@ func (c *HTTPClient) MakeConcurrentRequests(jobs []RequestJob) error {
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
 
-			fmt.Printf("Starting request %s with seed %d\n", j.ID, j.Payload.Seed)
+			// Get seed for logging based on payload type
+			var seed int
+			switch payload := j.Payload.(type) {
+			case RequestPayload:
+				seed = payload.Seed
+			case ImageFXPayload:
+				seed = payload.UserInput.Seed
+			default:
+				seed = 0 // fallback
+			}
+
+			fmt.Printf("Starting request %s with seed %d\n", j.ID, seed)
 
 			result := JobResult{ID: j.ID}
 
@@ -569,7 +618,8 @@ func ParsePromptsFromFile(filename string) ([]string, error) {
 	text := strings.TrimSpace(string(content))
 
 	// Parse prompts using regex to match the pattern: Prompt X: "content"
-	re := regexp.MustCompile(`Prompt\s+\d+:\s*"([^"]+)"`)
+	// (?s) flag enables dot to match newlines, .*? is non-greedy to stop at first closing quote
+	re := regexp.MustCompile(`(?s)Prompt\s+\d+:\s*"(.*?)"`)
 	matches := re.FindAllStringSubmatch(text, -1)
 
 	if len(matches) == 0 {
@@ -588,6 +638,7 @@ func ParsePromptsFromFile(filename string) ([]string, error) {
 }
 
 // CreateJobsFromPrompts creates request jobs from a list of prompts
+// CreateJobsFromPrompts creates request jobs from a list of prompts
 func (c *HTTPClient) CreateJobsFromPrompts(prompts []string, options map[string]interface{}) []RequestJob {
 	var jobs []RequestJob
 
@@ -604,10 +655,19 @@ func (c *HTTPClient) CreateJobsFromPrompts(prompts []string, options map[string]
 		jobOptions["prompt"] = prompt
 		jobOptions["seed"] = c.GenerateSeed()
 
+		// Create the job based on the tool type
+		var payload interface{}
+		if c.config.Tool == "imagefx" {
+			payload = CreateImageFXPayload(jobOptions)
+		} else {
+			// Default to whisk
+			payload = CreateWhiskPayload(jobOptions)
+		}
+
 		// Create the job
 		job := RequestJob{
 			ID:      fmt.Sprintf("prompt_%d", i+1),
-			Payload: CreateDefaultPayload(jobOptions),
+			Payload: payload,
 		}
 
 		jobs = append(jobs, job)
@@ -715,6 +775,7 @@ func LoadConfigFromEnv() Config {
 		InitialRetryDelay: GetEnvDuration("INITIAL_RETRY_DELAY", 2*time.Second),
 		BackoffMultiplier: GetEnvFloat("BACKOFF_MULTIPLIER", 2.0),
 		MaxRetryDelay:     GetEnvDuration("MAX_RETRY_DELAY", 30*time.Second),
+		Tool:              GetEnv("TOOL", "whisk"),
 	}
 }
 
@@ -732,7 +793,12 @@ func main() {
 	if config.AuthToken == "" {
 		log.Fatal("API_AUTH_TOKEN is required. Please set it in your .env file or environment variables.")
 	}
+	// Validate tool selection
+	if config.Tool != "whisk" && config.Tool != "imagefx" {
+		log.Fatalf("Invalid tool: %s. Must be 'whisk' or 'imagefx'", config.Tool)
+	}
 
+	fmt.Printf("Using tool: %s\n", config.Tool)
 	// Create HTTP client
 	client := NewHTTPClient(config)
 
@@ -803,4 +869,75 @@ func SaveConfigToFile(config Config, filename string) error {
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(config)
+}
+func CreateImageFXPayload(options map[string]interface{}) ImageFXPayload {
+	payload := ImageFXPayload{
+		UserInput: ImageFXUserInput{
+			CandidatesCount: 1,
+			Prompts:         []string{"A beautiful landscape"},
+			Seed:            738224,
+		},
+		ClientContext: ClientContext{
+			SessionID: ";1749359707591",
+			Tool:      "IMAGE_FX",
+		},
+		ModelInput: ImageFXModelInput{
+			ModelNameType: "IMAGEN_3_1",
+		},
+		AspectRatio: ASPECT_RATIO,
+	}
+
+	// Apply options similar to your existing logic
+	if val, ok := options["prompt"].(string); ok {
+		payload.UserInput.Prompts = []string{val}
+	}
+	// ... handle other options
+
+	return payload
+}
+
+// CreateWhiskPayload creates a Whisk-specific payload with customizable options
+func CreateWhiskPayload(options map[string]interface{}) RequestPayload {
+	payload := RequestPayload{
+		ClientContext: ClientContext{
+			WorkflowID: "c1adcfbd-0a10-4476-a265-ee421e26f7ba",
+			Tool:       "BACKBONE",
+			SessionID:  ";1748453848255",
+		},
+		ImageModelSettings: ImageModelSettings{
+			ImageModel:  "IMAGEN_3_5",
+			AspectRatio: ASPECT_RATIO,
+		},
+		Seed:          738224,
+		Prompt:        "A beautiful landscape",
+		MediaCategory: "MEDIA_CATEGORY_BOARD",
+	}
+
+	// Apply custom options
+	if val, ok := options["workflowId"].(string); ok {
+		payload.ClientContext.WorkflowID = val
+	}
+	if val, ok := options["tool"].(string); ok {
+		payload.ClientContext.Tool = val
+	}
+	if val, ok := options["sessionId"].(string); ok {
+		payload.ClientContext.SessionID = val
+	}
+	if val, ok := options["imageModel"].(string); ok {
+		payload.ImageModelSettings.ImageModel = val
+	}
+	if val, ok := options["aspectRatio"].(string); ok {
+		payload.ImageModelSettings.AspectRatio = val
+	}
+	if val, ok := options["seed"].(int); ok {
+		payload.Seed = val
+	}
+	if val, ok := options["prompt"].(string); ok {
+		payload.Prompt = val
+	}
+	if val, ok := options["mediaCategory"].(string); ok {
+		payload.MediaCategory = val
+	}
+
+	return payload
 }
