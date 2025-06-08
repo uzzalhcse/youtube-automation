@@ -11,9 +11,9 @@ import (
 
 // Configuration constants - modify these values as needed
 const (
-	DIRECTORY_PATH = "/home/uzzal/Videos/Youtube/Senior Healt Tips/Wisderly/videos/Avoid Brain Fog After 60 – 7 Simple Tricks to Stay Mentally Sharp/audio"
+	DIRECTORY_PATH = "/home/uzzal/Videos/Youtube/Boring Naptime/videos/Boring History For Sleep Your Life as Boudica and more/Audio"
 	START_NUMBER   = 1
-	END_NUMBER     = 3
+	END_NUMBER     = 13
 )
 
 func main() {
