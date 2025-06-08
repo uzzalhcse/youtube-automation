@@ -84,6 +84,37 @@ type APIResponse struct {
 	WorkflowID  string       `json:"workflowId"`
 }
 
+// ErrorInfo represents the error info in API error responses
+type ErrorInfo struct {
+	Type   string `json:"@type"`
+	Reason string `json:"reason"`
+}
+
+// APIError represents the complete API error response
+type APIError struct {
+	Error struct {
+		Code    int         `json:"code"`
+		Message string      `json:"message"`
+		Status  string      `json:"status"`
+		Details []ErrorInfo `json:"details"`
+	} `json:"error"`
+}
+
+// isUnsafeGenerationError checks if the error is due to unsafe content policy violation
+func isUnsafeGenerationError(body []byte) bool {
+	var apiError APIError
+	if err := json.Unmarshal(body, &apiError); err != nil {
+		return false
+	}
+
+	for _, detail := range apiError.Error.Details {
+		if detail.Reason == "PUBLIC_ERROR_UNSAFE_GENERATION" {
+			return true
+		}
+	}
+	return false
+}
+
 // RateLimiter manages request rate limiting with proper time-based control
 type RateLimiter struct {
 	requestsPerMinute int
@@ -232,9 +263,19 @@ func (c *HTTPClient) MakeRequest(payload RequestPayload) (*APIResponse, error) {
 		}
 		defer resp.Body.Close()
 
+		// Read response body first to check for unsafe generation errors
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read response body: %w", err)
+			if attempt < c.config.RetryAttempts {
+				c.waitWithBackoff(attempt)
+				continue
+			}
+			return nil, lastErr
+		}
+
 		// Handle rate limiting (429) and server errors (5xx) with retry
 		if resp.StatusCode == 429 || (resp.StatusCode >= 500 && resp.StatusCode < 600) {
-			body, _ := io.ReadAll(resp.Body)
 			lastErr = fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(body))
 
 			if attempt < c.config.RetryAttempts {
@@ -246,23 +287,17 @@ func (c *HTTPClient) MakeRequest(payload RequestPayload) (*APIResponse, error) {
 			return nil, lastErr
 		}
 
+		// Handle content policy violations (400 with unsafe generation error) - don't retry
+		if resp.StatusCode == 400 && isUnsafeGenerationError(body) {
+			return nil, fmt.Errorf("content policy violation - prompt contains unsafe content: %s", string(body))
+		}
+
 		// Check for other error status codes (don't retry client errors except 429)
 		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
 			return nil, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(body))
 		}
 
-		// Read and parse successful response
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			lastErr = fmt.Errorf("failed to read response body: %w", err)
-			if attempt < c.config.RetryAttempts {
-				c.waitWithBackoff(attempt)
-				continue
-			}
-			return nil, lastErr
-		}
-
+		// Parse successful response
 		var apiResponse APIResponse
 		err = json.Unmarshal(body, &apiResponse)
 		if err != nil {
@@ -317,6 +352,16 @@ func (c *HTTPClient) SaveImage(encodedImage, filename string) error {
 	return nil
 }
 
+// Helper function to get prompt by job ID
+func getPromptByJobID(jobs []RequestJob, jobID string) string {
+	for _, job := range jobs {
+		if job.ID == jobID {
+			return job.Payload.Prompt
+		}
+	}
+	return "Unknown prompt"
+}
+
 // ProcessResponse processes the API response and saves all images
 func (c *HTTPClient) ProcessResponse(response *APIResponse, requestID string) error {
 	for panelIdx, panel := range response.ImagePanels {
@@ -339,13 +384,21 @@ type RequestJob struct {
 	Payload RequestPayload
 }
 
+// JobResult represents the result of a job execution
+type JobResult struct {
+	ID      string
+	Success bool
+	Error   error
+	Skipped bool // true if skipped due to content policy violation
+}
+
 // MakeConcurrentRequests makes multiple requests concurrently with proper rate limiting
 func (c *HTTPClient) MakeConcurrentRequests(jobs []RequestJob) error {
 	// Create a semaphore to limit concurrency
 	semaphore := make(chan struct{}, c.config.MaxConcurrency)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var errors []error
+	var results []JobResult
 	var completed int
 
 	for _, job := range jobs {
@@ -359,11 +412,25 @@ func (c *HTTPClient) MakeConcurrentRequests(jobs []RequestJob) error {
 
 			fmt.Printf("Starting request %s with seed %d\n", j.ID, j.Payload.Seed)
 
+			result := JobResult{ID: j.ID}
+
 			// Make the request (with built-in rate limiting and retries)
 			response, err := c.MakeRequest(j.Payload)
 			if err != nil {
+				// Check if it's a content policy violation
+				if strings.Contains(err.Error(), "content policy violation") {
+					result.Skipped = true
+					result.Error = err
+					fmt.Printf("Skipping request %s due to content policy violation\n", j.ID)
+				} else {
+					result.Success = false
+					result.Error = err
+				}
+
 				mu.Lock()
-				errors = append(errors, fmt.Errorf("request %s failed: %w", j.ID, err))
+				results = append(results, result)
+				completed++
+				fmt.Printf("Request %s failed/skipped (%d/%d): %v\n", j.ID, completed, len(jobs), err)
 				mu.Unlock()
 				return
 			}
@@ -371,13 +438,20 @@ func (c *HTTPClient) MakeConcurrentRequests(jobs []RequestJob) error {
 			// Process and save images
 			err = c.ProcessResponse(response, j.ID)
 			if err != nil {
+				result.Success = false
+				result.Error = fmt.Errorf("processing %s failed: %w", j.ID, err)
+
 				mu.Lock()
-				errors = append(errors, fmt.Errorf("processing %s failed: %w", j.ID, err))
+				results = append(results, result)
+				completed++
+				fmt.Printf("Request %s processing failed (%d/%d): %v\n", j.ID, completed, len(jobs), err)
 				mu.Unlock()
 				return
 			}
 
+			result.Success = true
 			mu.Lock()
+			results = append(results, result)
 			completed++
 			fmt.Printf("Completed request %s (%d/%d)\n", j.ID, completed, len(jobs))
 			mu.Unlock()
@@ -386,11 +460,43 @@ func (c *HTTPClient) MakeConcurrentRequests(jobs []RequestJob) error {
 
 	wg.Wait()
 
-	if len(errors) > 0 {
-		for _, err := range errors {
-			log.Printf("Error: %v", err)
+	// Analyze results
+	var successCount, failureCount, skippedCount int
+	var criticalErrors []error
+
+	for _, result := range results {
+		switch {
+		case result.Success:
+			successCount++
+		case result.Skipped:
+			skippedCount++
+			log.Printf("Skipped %s due to content policy violation", result.ID)
+			log.Printf("Prompt was: %s", getPromptByJobID(jobs, result.ID))
+		default:
+			failureCount++
+			criticalErrors = append(criticalErrors, fmt.Errorf("%s: %w", result.ID, result.Error))
+			log.Printf("Failed %s: %v", result.ID, result.Error)
 		}
-		return fmt.Errorf("encountered %d errors during concurrent requests", len(errors))
+	}
+
+	// Print summary
+	fmt.Printf("\n=== EXECUTION SUMMARY ===\n")
+	fmt.Printf("Total requests: %d\n", len(jobs))
+	fmt.Printf("Successful: %d\n", successCount)
+	fmt.Printf("Skipped (content policy): %d\n", skippedCount)
+	fmt.Printf("Failed (other errors): %d\n", failureCount)
+
+	// Only return error if there are critical failures (not content policy violations)
+	if len(criticalErrors) > 0 {
+		fmt.Printf("\nCritical errors encountered:\n")
+		for _, err := range criticalErrors {
+			fmt.Printf("- %v\n", err)
+		}
+		return fmt.Errorf("encountered %d critical errors during concurrent requests", len(criticalErrors))
+	}
+
+	if skippedCount > 0 {
+		fmt.Printf("\nNote: %d requests were skipped due to content policy violations. This is normal and expected.\n", skippedCount)
 	}
 
 	return nil
@@ -663,11 +769,12 @@ func main() {
 	startTime := time.Now()
 	err = client.MakeConcurrentRequests(jobs)
 	if err != nil {
-		log.Fatalf("Concurrent requests failed: %v", err)
+		log.Printf("Some requests encountered critical errors: %v", err)
+		// Don't exit fatally - let the program complete and show summary
 	}
 
 	duration := time.Since(startTime)
-	fmt.Printf("All requests completed successfully in %v!\n", duration)
+	fmt.Printf("\nExecution completed in %v!\n", duration)
 }
 
 // LoadConfigFromFile loads configuration from a JSON file
