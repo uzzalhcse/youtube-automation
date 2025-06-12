@@ -1,0 +1,143 @@
+{
+  "settings": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "bgm_volume": 0.3,
+    "voice_volume": 1.0
+  },
+  "overlays": [
+    {
+      "source": "logo.png",
+      "start": 2.0,
+      "end": 7.0,
+      "keyframes": [
+        {
+          "time": 2.0,
+          "x": 1280,
+          "y": 720,
+          "opacity": 0.0,
+          "scale": 0.5
+        },
+        {
+          "time": 4.0,
+          "x": 1000,
+          "y": 700,
+          "opacity": 1.0,
+          "scale": 1.0
+        },
+        {
+          "time": 7.0,
+          "x": 800,
+          "y": 650,
+          "opacity": 0.0,
+          "scale": 1.2
+        }
+      ]
+    },
+    {
+      "source": "sticker.gif",
+      "start": 10.0,
+      "end": 15.0,
+      "keyframes": [
+        {
+          "time": 10.0,
+          "x": 100,
+          "y": 100,
+          "opacity": 0.0,
+          "scale": 0.8
+        },
+        {
+          "time": 12.0,
+          "x": 200,
+          "y": 150,
+          "opacity": 1.0,
+          "scale": 1.0
+        },
+        {
+          "time": 15.0,
+          "x": 300,
+          "y": 200,
+          "opacity": 0.0,
+          "scale": 1.1
+        }
+      ]
+    }
+  ],
+  "texts": [
+    {
+      "text": "Welcome to My Video!",
+      "start": 5.0,
+      "end": 10.0,
+      "font_size": 48,
+      "font_color": "white",
+      "keyframes": [
+        {
+          "time": 5.0,
+          "x": 640,
+          "y": 100,
+          "opacity": 0.0,
+          "scale": 0.8
+        },
+        {
+          "time": 6.0,
+          "x": 640,
+          "y": 100,
+          "opacity": 1.0,
+          "scale": 1.0
+        },
+        {
+          "time": 9.0,
+          "x": 640,
+          "y": 100,
+          "opacity": 1.0,
+          "scale": 1.0
+        },
+        {
+          "time": 10.0,
+          "x": 640,
+          "y": 100,
+          "opacity": 0.0,
+          "scale": 1.2
+        }
+      ]
+    },
+    {
+      "text": "Creating Amazing Content",
+      "start": 12.0,
+      "end": 18.0,
+      "font_size": 36,
+      "font_color": "yellow",
+      "keyframes": [
+        {
+          "time": 12.0,
+          "x": 960,
+          "y": 500,
+          "opacity": 0.0,
+          "scale": 1.0
+        },
+        {
+          "time": 13.5,
+          "x": 960,
+          "y": 500,
+          "opacity": 1.0,
+          "scale": 1.0
+        },
+        {
+          "time": 16.5,
+          "x": 960,
+          "y": 500,
+          "opacity": 1.0,
+          "scale": 1.0
+        },
+        {
+          "time": 18.0,
+          "x": 960,
+          "y": 500,
+          "opacity": 0.0,
+          "scale": 0.8
+        }
+      ]
+    }
+  ]
+}
