@@ -57,7 +57,7 @@ func main() {
 
 	// Step 4: Generate final video with overlays and effects
 	fmt.Println("🎛️ Step 4: Applying overlays and effects...")
-	if err := editor.GenerateFinalVideo(); err != nil {
+	if err := editor.GenerateFinalVideoSimplified(); err != nil {
 		log.Fatalf("Failed to generate final video: %v", err)
 	}
 	fmt.Println("✅ Final video generated")
