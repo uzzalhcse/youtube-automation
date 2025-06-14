@@ -50,18 +50,28 @@ type Settings struct {
 	OverlayOpacity float64 `json:"overlay_opacity"` // Opacity for overlay videos (0.0 to 1.0)
 
 	// Zoom Animation Settings
-	ZoomSpeed               float64 `json:"zoom_speed,omitempty"`        // Speed of zoom (0.0005 to 0.005, default 0.0015)
-	ZoomIntensity           float64 `json:"zoom_intensity,omitempty"`    // Maximum zoom level (1.1 to 2.0, default 1.3)
-	PanSpeed                float64 `json:"pan_speed,omitempty"`         // Speed of panning (0.0001 to 0.001, default 0.0003)
-	TransitionSmooth        float64 `json:"transition_smooth,omitempty"` // Smoothness factor (0.5 to 2.0, default 1.0)
-	AnimationPreset         string  `json:"animation_preset,omitempty"`  // "gentle", "moderate", "dynamic", "custom"
-	MaxConcurrentJobs       int     `json:"max_concurrent_jobs,omitempty"`
-	UseGPU                  bool    `json:"use_gpu"`    // NEW: Enable GPU acceleration
-	GPUDevice               string  `json:"gpu_device"` // NEW: GPU device selection
-	UsePartialImageDuration bool    `json:"use_partial_image_duration"`
-	ImagesDurationMinutes   float64 `json:"images_duration_minutes"`
-	BlackScreenColor        string  `json:"black_screen_color"` // "black", "#000000", etc.
-	UseAnimationEffects     bool    `json:"use_animation_effects"`
+	ZoomSpeed               float64          `json:"zoom_speed,omitempty"`        // Speed of zoom (0.0005 to 0.005, default 0.0015)
+	ZoomIntensity           float64          `json:"zoom_intensity,omitempty"`    // Maximum zoom level (1.1 to 2.0, default 1.3)
+	PanSpeed                float64          `json:"pan_speed,omitempty"`         // Speed of panning (0.0001 to 0.001, default 0.0003)
+	TransitionSmooth        float64          `json:"transition_smooth,omitempty"` // Smoothness factor (0.5 to 2.0, default 1.0)
+	AnimationPreset         string           `json:"animation_preset,omitempty"`  // "gentle", "moderate", "dynamic", "custom"
+	MaxConcurrentJobs       int              `json:"max_concurrent_jobs,omitempty"`
+	UseGPU                  bool             `json:"use_gpu"`    // NEW: Enable GPU acceleration
+	GPUDevice               string           `json:"gpu_device"` // NEW: GPU device selection
+	UsePartialImageDuration bool             `json:"use_partial_image_duration"`
+	ImagesDurationMinutes   float64          `json:"images_duration_minutes"`
+	BlackScreenColor        string           `json:"black_screen_color"` // "black", "#000000", etc.
+	UseAnimationEffects     bool             `json:"use_animation_effects"`
+	ChromaKey               *ChromaKeyConfig `json:"chroma_key,omitempty"`
+}
+type ChromaKeyConfig struct {
+	Enabled       bool    // Whether to apply chroma key removal
+	Color         string  // Color to remove (e.g., "green", "blue", "#00FF00")
+	Similarity    float64 // Color similarity threshold (0.0-1.0, default: 0.3)
+	Blend         float64 // Edge blending amount (0.0-1.0, default: 0.1)
+	YUVThreshold  float64 // YUV threshold for better keying (0.0-1.0, default: 0.0)
+	AutoAdjust    bool    // Auto-adjust thresholds for better results
+	SpillSuppress bool    // Enable spill suppression for better edge quality
 }
 
 // Example project.json configuration:

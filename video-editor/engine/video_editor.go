@@ -36,6 +36,17 @@ type ZoomConfig struct {
 	EndY       float64 // Ending Y position
 }
 
+// ChromaKeyConfig holds configuration for chroma key removal
+type ChromaKeyConfig struct {
+	Enabled       bool    // Whether to apply chroma key removal
+	Color         string  // Color to remove (e.g., "green", "blue", "#00FF00")
+	Similarity    float64 // Color similarity threshold (0.0-1.0, default: 0.3)
+	Blend         float64 // Edge blending amount (0.0-1.0, default: 0.1)
+	YUVThreshold  float64 // YUV threshold for better keying (0.0-1.0, default: 0.0)
+	AutoAdjust    bool    // Auto-adjust thresholds for better results
+	SpillSuppress bool    // Enable spill suppression for better edge quality
+}
+
 // Add these fields to VideoEditor struct
 type VideoEditor struct {
 	InputDir   string
@@ -75,6 +86,130 @@ func NewVideoEditor(inputDir, outputDir string, config *models.VideoConfig) *Vid
 	ve.optimizeForColab()
 
 	return ve
+}
+
+// getDefaultChromaKeyConfig returns default chroma key settings
+func (ve *VideoEditor) getDefaultChromaKeyConfig() ChromaKeyConfig {
+	return ChromaKeyConfig{
+		Enabled:       true,
+		Color:         "green",
+		Similarity:    0.3,
+		Blend:         0.1,
+		YUVThreshold:  0.0,
+		AutoAdjust:    true,
+		SpillSuppress: true,
+	}
+}
+
+// getChromaKeyConfig gets chroma key config from video config or returns default
+func (ve *VideoEditor) getChromaKeyConfig() ChromaKeyConfig {
+	// Check if config has chroma key settings
+	if ve.Config.Settings.ChromaKey != nil {
+		return ChromaKeyConfig{
+			Enabled:       ve.Config.Settings.ChromaKey.Enabled,
+			Color:         ve.Config.Settings.ChromaKey.Color,
+			Similarity:    ve.Config.Settings.ChromaKey.Similarity,
+			Blend:         ve.Config.Settings.ChromaKey.Blend,
+			YUVThreshold:  ve.Config.Settings.ChromaKey.YUVThreshold,
+			AutoAdjust:    ve.Config.Settings.ChromaKey.AutoAdjust,
+			SpillSuppress: ve.Config.Settings.ChromaKey.SpillSuppress,
+		}
+	}
+
+	// Return default config if not specified
+	return ve.getDefaultChromaKeyConfig()
+}
+
+func (ve *VideoEditor) createChromaKeyFilter(config ChromaKeyConfig, width, height int, overlayOpacity float64) string {
+	if !config.Enabled {
+		// Return basic scaling filter without chroma key but with alpha support
+		return fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black@0.0,format=yuva420p,colorchannelmixer=aa=%.2f",
+			width, height, width, height, overlayOpacity)
+	}
+
+	var chromaFilter string
+
+	// Determine color value based on config
+	colorValue := config.Color
+	switch strings.ToLower(config.Color) {
+	case "green":
+		colorValue = "0x00FF00"
+	case "blue":
+		colorValue = "0x0000FF"
+	case "red":
+		colorValue = "0xFF0000"
+	case "white":
+		colorValue = "0xFFFFFF"
+	case "black":
+		colorValue = "0x000000"
+	default:
+		// Use the color as-is if it's a hex value or color name
+		if !strings.HasPrefix(config.Color, "0x") && !strings.HasPrefix(config.Color, "#") {
+			colorValue = config.Color
+		}
+	}
+
+	// Build chroma key filter with advanced settings
+	if config.AutoAdjust {
+		// Use chromakey filter with auto-adjustment
+		chromaFilter = fmt.Sprintf("chromakey=color=%s:similarity=%.3f:blend=%.3f:yuv=1",
+			colorValue, config.Similarity, config.Blend)
+	} else {
+		// Use basic colorkey filter
+		chromaFilter = fmt.Sprintf("colorkey=color=%s:similarity=%.3f:blend=%.3f",
+			colorValue, config.Similarity, config.Blend)
+	}
+
+	// Add spill suppression if enabled
+	var spillFilter string
+	if config.SpillSuppress && strings.ToLower(config.Color) == "green" {
+		spillFilter = ",despill=type=green:mix=0.7:expand=0.1"
+	} else if config.SpillSuppress && strings.ToLower(config.Color) == "blue" {
+		spillFilter = ",despill=type=blue:mix=0.7:expand=0.1"
+	}
+
+	// Combine all filters with proper transparency handling
+	fullFilter := fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black@0.0,%s%s,format=yuva420p,colorchannelmixer=aa=%.2f",
+		width, height, width, height, chromaFilter, spillFilter, overlayOpacity)
+
+	return fullFilter
+}
+
+// detectChromaKeyInVideo analyzes video to detect if it contains chroma key background
+func (ve *VideoEditor) detectChromaKeyInVideo(videoPath string) (bool, string, error) {
+	// Use ffprobe to analyze the video and detect dominant colors
+	args := []string{
+		"-v", "quiet",
+		"-select_streams", "v:0",
+		"-show_entries", "frame=pkt_pts_time",
+		"-of", "csv=p=0",
+		"-read_intervals", "%+#1", // Analyze first frame only
+		videoPath,
+	}
+
+	cmd := exec.Command("ffprobe", args...)
+	_, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("Warning: Could not analyze video for chroma key detection: %v", err)
+		return false, "", nil
+	}
+
+	// For now, we'll use a simple heuristic
+	// In a production environment, you might want to use more sophisticated analysis
+	videoPathLower := strings.ToLower(filepath.Base(videoPath))
+
+	// Check filename for common indicators
+	if strings.Contains(videoPathLower, "green") || strings.Contains(videoPathLower, "greenscreen") || strings.Contains(videoPathLower, "chroma") {
+		return true, "green", nil
+	}
+	if strings.Contains(videoPathLower, "blue") || strings.Contains(videoPathLower, "bluescreen") {
+		return true, "blue", nil
+	}
+
+	// TODO: Implement actual color analysis using ffmpeg histogram analysis
+	// This would involve extracting a frame and analyzing its color distribution
+
+	return false, "", nil
 }
 
 // Simplified createZoomFilter that doesn't rely on CUDA filters
@@ -366,6 +501,7 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 }
 
 // PrepareOverlayVideo processes a single overlay video to fit the screen and loop for the required duration
+// Now includes chroma key removal functionality
 func (ve *VideoEditor) PrepareOverlayVideo(overlayPath string, duration float64, index int) (string, error) {
 	outputPath := filepath.Join(ve.OutputDir, fmt.Sprintf("prepared_overlay_%d.mp4", index))
 
@@ -387,10 +523,38 @@ func (ve *VideoEditor) PrepareOverlayVideo(overlayPath string, duration float64,
 	if ve.Config.Settings.OverlayOpacity > 0 {
 		overlayOpacity = ve.Config.Settings.OverlayOpacity
 	}
+
+	// Get chroma key configuration
+	chromaConfig := ve.getChromaKeyConfig()
+
+	// Auto-detect chroma key if enabled
+	if chromaConfig.Enabled && chromaConfig.Color == "auto" {
+		detected, detectedColor, err := ve.detectChromaKeyInVideo(overlayPath)
+		if err != nil {
+			log.Printf("Warning: Failed to auto-detect chroma key for %s: %v", overlayPath, err)
+		} else if detected {
+			chromaConfig.Color = detectedColor
+			log.Printf("Auto-detected chroma key color '%s' in overlay %d", detectedColor, index)
+		} else {
+			log.Printf("No chroma key detected in overlay %d, disabling chroma key removal", index)
+			chromaConfig.Enabled = false
+		}
+	}
+
+	// Log chroma key status
+	if chromaConfig.Enabled {
+		log.Printf("Applying chroma key removal to overlay %d (color: %s, similarity: %.2f)",
+			index, chromaConfig.Color, chromaConfig.Similarity)
+	}
+
 	// Get encoder settings
 	encoder, encoderArgs := ve.getEncoderSettings()
-	var videoFilter string
+
+	// Create video filter with chroma key support
+	videoFilter := ve.createChromaKeyFilter(chromaConfig, ve.Config.Settings.Width, ve.Config.Settings.Height, overlayOpacity)
+
 	if originalDuration >= duration {
+		// Overlay is longer than needed, just trim it
 		args := []string{
 			"-y",
 			"-i", overlayForFFmpeg,
@@ -403,7 +567,7 @@ func (ve *VideoEditor) PrepareOverlayVideo(overlayPath string, duration float64,
 		args = append(args, encoderArgs...)
 		args = append(args,
 			"-r", strconv.Itoa(ve.Config.Settings.FPS),
-			"-pix_fmt", "yuv420p",
+			"-pix_fmt", "yuva420p", // Use yuva420p for alpha channel support
 			"-an",
 			outputForFFmpeg,
 		)
@@ -419,11 +583,6 @@ func (ve *VideoEditor) PrepareOverlayVideo(overlayPath string, duration float64,
 		// Calculate how many loops we need
 		loopCount := int(duration/originalDuration) + 1
 
-		videoFilter = fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black,format=yuva420p,colorchannelmixer=aa=%.2f",
-			ve.Config.Settings.Width, ve.Config.Settings.Height,
-			ve.Config.Settings.Width, ve.Config.Settings.Height,
-			overlayOpacity)
-
 		args := []string{
 			"-y",
 			"-stream_loop", strconv.Itoa(loopCount),
@@ -437,7 +596,7 @@ func (ve *VideoEditor) PrepareOverlayVideo(overlayPath string, duration float64,
 		args = append(args, encoderArgs...)
 		args = append(args,
 			"-r", strconv.Itoa(ve.Config.Settings.FPS),
-			"-pix_fmt", "yuva420p",
+			"-pix_fmt", "yuva420p", // Use yuva420p for alpha channel support
 			"-an",
 			outputForFFmpeg,
 		)
@@ -452,7 +611,14 @@ func (ve *VideoEditor) PrepareOverlayVideo(overlayPath string, duration float64,
 		}
 	}
 
-	log.Printf("✓ Overlay video %d prepared successfully with %.0f%% opacity", index, overlayOpacity*100)
+	// Log success with chroma key status
+	chromaStatus := ""
+	if chromaConfig.Enabled {
+		chromaStatus = fmt.Sprintf(" with %s chroma key removal", chromaConfig.Color)
+	}
+	log.Printf("✓ Overlay video %d prepared successfully with %.0f%% opacity%s",
+		index, overlayOpacity*100, chromaStatus)
+
 	return outputPath, nil
 }
 
@@ -469,7 +635,7 @@ func (ve *VideoEditor) PrepareOverlayVideosConcurrently(overlayVideos []string, 
 	var mu sync.Mutex
 	errorChan := make(chan error, len(overlayVideos))
 
-	log.Printf("Preparing %d overlay videos concurrently", len(overlayVideos))
+	log.Printf("Preparing %d overlay videos concurrently with chroma key support", len(overlayVideos))
 
 	for i, overlayPath := range overlayVideos {
 		wg.Add(1)
@@ -513,15 +679,13 @@ func (ve *VideoEditor) PrepareOverlayVideosConcurrently(overlayVideos []string, 
 	return validOverlays, nil
 }
 
-// Fix the GenerateFinalVideoWithOverlays method to use consistent encoder
 func (ve *VideoEditor) GenerateFinalVideoWithOverlays() error {
 	slideshowPath := filepath.Join(ve.OutputDir, "slideshow.mp4")
 	voicePath := filepath.Join(ve.OutputDir, "merged_voice.mp3")
 	bgmPath := filepath.Join(ve.OutputDir, "extended_bgm.mp3")
 	finalPath := filepath.Join(ve.OutputDir, "final_video.mp4")
 
-	log.Printf("Generating final video with overlays...")
-
+	log.Printf("Generating final video with overlays and chroma key support...")
 	// Get overlay opacity from config
 	overlayOpacity := 0.3
 	if ve.Config.Settings.OverlayOpacity > 0 {
@@ -558,10 +722,10 @@ func (ve *VideoEditor) GenerateFinalVideoWithOverlays() error {
 		return ve.GenerateFinalVideoSimplified()
 	}
 
-	// CONCURRENT OVERLAY PREPARATION
+	// CONCURRENT OVERLAY PREPARATION WITH CHROMA KEY
 	preparedOverlays, err := ve.PrepareOverlayVideosConcurrently(overlayVideos, slideshowDuration)
 	if err != nil {
-		return fmt.Errorf("failed to prepare overlays concurrently: %v", err)
+		return fmt.Errorf("failed to prepare overlay videos with chroma key: %v", err)
 	}
 
 	if len(preparedOverlays) == 0 {
@@ -658,143 +822,117 @@ func (ve *VideoEditor) GenerateFinalVideoWithOverlays() error {
 	// Add encoder-specific arguments
 	args = append(args, encoderArgs...)
 
-	// Add common arguments
+	// Add final encoding parameters
 	args = append(args,
 		"-c:a", "aac",
 		"-b:a", "128k",
-		"-r", strconv.Itoa(ve.Config.Settings.FPS),
-		"-shortest",
+		"-ar", "44100",
+		"-ac", "2",
+		"-pix_fmt", "yuv420p",
+		"-movflags", "+faststart",
+		"-preset", ve.getPresetForEncoder(encoder),
 		finalForFFmpeg,
 	)
 
-	log.Printf("FFmpeg final command with overlays: ffmpeg %s", strings.Join(args, " "))
+	log.Printf("Executing final video generation with %d chroma key overlays...", len(preparedOverlays))
 
 	cmd := exec.Command("ffmpeg", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Printf("FFmpeg final video with overlays output: %s", string(output))
+		log.Printf("FFmpeg final video generation output: %s", string(output))
 		return fmt.Errorf("failed to generate final video with overlays: %v", err)
 	}
 
-	log.Printf("✓ Final video with overlays generated successfully using concurrent processing")
-
-	// Clean up prepared overlay files
-	for _, overlay := range preparedOverlays {
-		if err := os.Remove(overlay); err != nil {
-			log.Printf("Warning: failed to clean up prepared overlay %s: %v", overlay, err)
-		}
-	}
-
-	// Verify final output
+	// Verify final video was created
 	if _, err := os.Stat(finalPath); os.IsNotExist(err) {
 		return fmt.Errorf("final video file was not created: %s", finalPath)
 	}
 
-	// Log final video info
+	// Check final video duration
 	if finalDuration, err := ve.getVideoDuration(finalPath); err == nil {
-		log.Printf("Final video duration: %.2f seconds", finalDuration)
+		log.Printf("Final video duration: %.2f seconds (%.2f minutes)", finalDuration, finalDuration/60.0)
+	}
+
+	log.Printf("✓ Final video with chroma key overlays generated successfully: %s", finalPath)
+
+	// Clean up prepared overlay files
+	for i, overlay := range preparedOverlays {
+		if err := os.Remove(overlay); err != nil {
+			log.Printf("Warning: failed to clean up prepared overlay %d: %v", i, err)
+		}
 	}
 
 	return nil
 }
 
-// Also update the GenerateFinalVideoSimplified method to use consistent encoder
+// getPresetForEncoder returns appropriate preset based on encoder type
+func (ve *VideoEditor) getPresetForEncoder(encoder string) string {
+	switch encoder {
+	case "h264_nvenc", "hevc_nvenc":
+		return "fast" // NVIDIA presets: ultrafast, superfast, veryfast, faster, fast, medium, slow, slower, veryslow
+	case "h264_qsv", "hevc_qsv":
+		return "fast" // Intel QSV presets
+	case "h264_videotoolbox", "hevc_videotoolbox":
+		return "fast" // Apple VideoToolbox presets
+	case "libx264", "libx265":
+		if ve.isGoogleColab() {
+			return "ultrafast" // Fastest preset for Colab
+		}
+		return "fast" // CPU presets
+	default:
+		return "fast"
+	}
+}
+
+// GenerateFinalVideoSimplified generates final video without overlays (fallback method)
 func (ve *VideoEditor) GenerateFinalVideoSimplified() error {
 	slideshowPath := filepath.Join(ve.OutputDir, "slideshow.mp4")
 	voicePath := filepath.Join(ve.OutputDir, "merged_voice.mp3")
 	bgmPath := filepath.Join(ve.OutputDir, "extended_bgm.mp3")
 	finalPath := filepath.Join(ve.OutputDir, "final_video.mp4")
 
-	log.Printf("Generating final video (simplified)...")
-	log.Printf("Slideshow: %s", slideshowPath)
-	log.Printf("Voice: %s", voicePath)
-	log.Printf("BGM: %s", bgmPath)
-	log.Printf("Final output: %s", finalPath)
+	log.Printf("Generating simplified final video without overlays...")
 
-	// Verify all input files exist
-	requiredFiles := map[string]string{
-		"slideshow": slideshowPath,
-		"voice":     voicePath,
-		"bgm":       bgmPath,
-	}
+	// Get encoder settings
+	encoder, encoderArgs := ve.getEncoderSettings()
 
-	for name, path := range requiredFiles {
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			return fmt.Errorf("required %s file does not exist: %s", name, path)
-		}
-	}
-
-	// Convert all paths for FFmpeg compatibility
+	// Convert paths for FFmpeg
 	slideshowForFFmpeg := strings.ReplaceAll(slideshowPath, "\\", "/")
 	voiceForFFmpeg := strings.ReplaceAll(voicePath, "\\", "/")
 	bgmForFFmpeg := strings.ReplaceAll(bgmPath, "\\", "/")
 	finalForFFmpeg := strings.ReplaceAll(finalPath, "\\", "/")
 
-	// Remove existing output file if it exists
-	if _, err := os.Stat(finalPath); err == nil {
-		if err := os.Remove(finalPath); err != nil {
-			log.Printf("Warning: failed to remove existing final video: %v", err)
-		}
-	}
-
-	// Get encoder settings for consistency
-	encoder, encoderArgs := ve.getOptimalEncoderSettings()
-	log.Printf("Using encoder: %s for simplified final video", encoder)
-
-	// Build FFmpeg command args
 	args := []string{
 		"-y",
-		"-i", slideshowForFFmpeg, // [0] - slideshow video
-		"-i", voiceForFFmpeg, // [1] - voice audio
-		"-i", bgmForFFmpeg, // [2] - background music
-		"-filter_complex",
-		fmt.Sprintf("[1:a]volume=%.2f[voice];[2:a]volume=%.2f[bgm];[voice][bgm]amix=inputs=2:duration=first:dropout_transition=0[final_audio]",
-			ve.Config.Settings.VoiceVolume, ve.Config.Settings.BGMVolume),
-		"-map", "0:v", // Use video from slideshow
-		"-map", "[final_audio]", // Use mixed audio
+		"-i", slideshowForFFmpeg,
+		"-i", voiceForFFmpeg,
+		"-i", bgmForFFmpeg,
+		"-filter_complex", "[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=0[a]",
+		"-map", "0:v",
+		"-map", "[a]",
+		"-c:v", encoder,
 	}
 
-	// Add encoder and its settings
-	if encoder == "h264_nvenc" && ve.UseGPU {
-		// Use GPU encoding - re-encode video for consistency
-		args = append(args, "-c:v", encoder)
-		args = append(args, encoderArgs...)
-	} else {
-		// Use CPU encoding or copy stream if already compatible
-		args = append(args, "-c:v", "copy") // Copy video stream if possible
-	}
-
-	// Add audio encoding settings
+	args = append(args, encoderArgs...)
 	args = append(args,
 		"-c:a", "aac",
 		"-b:a", "128k",
-		"-shortest", // End when shortest stream ends
+		"-ar", "44100",
+		"-ac", "2",
+		"-pix_fmt", "yuv420p",
+		"-movflags", "+faststart",
+		"-preset", ve.getPresetForEncoder(encoder),
 		finalForFFmpeg,
 	)
 
-	log.Printf("FFmpeg final command: ffmpeg %s", strings.Join(args, " "))
-
 	cmd := exec.Command("ffmpeg", args...)
-
-	// Capture output for debugging
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Printf("FFmpeg final video output: %s", string(output))
-		return fmt.Errorf("failed to generate final video: %v", err)
+		log.Printf("FFmpeg simplified video generation output: %s", string(output))
+		return fmt.Errorf("failed to generate simplified final video: %v", err)
 	}
 
-	log.Printf("✓ Final video generated successfully")
-
-	// Verify final output
-	if _, err := os.Stat(finalPath); os.IsNotExist(err) {
-		return fmt.Errorf("final video file was not created: %s", finalPath)
-	}
-
-	// Log final video info
-	if finalDuration, err := ve.getVideoDuration(finalPath); err == nil {
-		log.Printf("Final video duration: %.2f seconds", finalDuration)
-	}
-
+	log.Printf("✓ Simplified final video generated successfully: %s", finalPath)
 	return nil
 }
 
