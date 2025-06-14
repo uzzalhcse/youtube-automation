@@ -311,6 +311,7 @@ func (ve *VideoEditor) generateZoomConfig(index int) ZoomConfig {
 }
 
 // Modified createZoomFilter for better T4 performance and error handling
+// Modified createZoomFilter for better T4 performance and error handling
 func (ve *VideoEditor) createZoomFilter(config ZoomConfig, duration float64, width, height int) string {
 	// Calculate frames for smooth animation
 	totalFrames := int(duration * float64(ve.Config.Settings.FPS))
@@ -327,15 +328,15 @@ func (ve *VideoEditor) createZoomFilter(config ZoomConfig, duration float64, wid
 
 	var baseFilter string
 
-	// Check if we should use GPU acceleration
+	// Check if we should use GPU acceleration - SIMPLIFIED for T4
 	useGPUFilters := ve.UseGPU && ve.isT4Available() && ve.isEncoderAvailable("h264_nvenc")
 
 	switch config.Effect {
 	case ZoomIn:
 		zoomIncrement := ve.Config.Settings.ZoomSpeed * ve.Config.Settings.TransitionSmooth
 		if useGPUFilters {
-			// T4-optimized filter chain - fix the format conversion issue
-			baseFilter = fmt.Sprintf("hwupload_cuda,scale_cuda=%d:%d:interp_algo=lanczos,hwdownload,format=yuv420p,zoompan=z='min(1+%.6f*frame,%.3f)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
+			// T4-optimized filter chain - REMOVE hwdownload and format conversion
+			baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='min(1+%.6f*frame,%.3f)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
 				scaledWidth, scaledHeight,
 				zoomIncrement, config.EndScale, totalFrames, width, height)
 		} else {
@@ -348,8 +349,8 @@ func (ve *VideoEditor) createZoomFilter(config ZoomConfig, duration float64, wid
 	case ZoomOut:
 		zoomDecrement := ve.Config.Settings.ZoomSpeed * ve.Config.Settings.TransitionSmooth
 		if useGPUFilters {
-			// T4-optimized filter chain
-			baseFilter = fmt.Sprintf("hwupload_cuda,scale_cuda=%d:%d:interp_algo=lanczos,hwdownload,format=yuv420p,zoompan=z='max(%.3f-%.6f*frame,1.0)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
+			// T4-optimized filter chain - REMOVE hwdownload and format conversion
+			baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='max(%.3f-%.6f*frame,1.0)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
 				scaledWidth, scaledHeight,
 				config.StartScale, zoomDecrement, totalFrames, width, height)
 		} else {
@@ -365,7 +366,7 @@ func (ve *VideoEditor) createZoomFilter(config ZoomConfig, duration float64, wid
 		zoomPeak := config.StartScale + 0.3*ve.Config.Settings.ZoomIntensity
 
 		if useGPUFilters {
-			baseFilter = fmt.Sprintf("hwupload_cuda,scale_cuda=%d:%d:interp_algo=lanczos,hwdownload,format=yuv420p,zoompan=z='if(lt(frame,%d),1+%.6f*frame,%.3f-%.6f*(frame-%d))':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
+			baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='if(lt(frame,%d),1+%.6f*frame,%.3f-%.6f*(frame-%d))':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
 				scaledWidth, scaledHeight,
 				halfFrames, zoomPeak/float64(halfFrames), zoomPeak, zoomPeak/float64(halfFrames), halfFrames,
 				totalFrames, width, height)
@@ -379,7 +380,7 @@ func (ve *VideoEditor) createZoomFilter(config ZoomConfig, duration float64, wid
 	case PanZoom:
 		// Pan and zoom effect with smooth movement
 		if useGPUFilters {
-			baseFilter = fmt.Sprintf("hwupload_cuda,scale_cuda=%d:%d:interp_algo=lanczos,hwdownload,format=yuv420p,zoompan=z='%.3f+%.6f*frame':d=%d:x='iw*%.3f+(iw*%.3f-iw*%.3f)*frame/%d':y='ih*%.3f+(ih*%.3f-ih*%.3f)*frame/%d':s=%dx%d",
+			baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='%.3f+%.6f*frame':d=%d:x='iw*%.3f+(iw*%.3f-iw*%.3f)*frame/%d':y='ih*%.3f+(ih*%.3f-ih*%.3f)*frame/%d':s=%dx%d",
 				scaledWidth, scaledHeight,
 				config.StartScale, (config.EndScale-config.StartScale)/float64(totalFrames), totalFrames,
 				config.StartX, config.EndX, config.StartX, totalFrames,
@@ -397,7 +398,7 @@ func (ve *VideoEditor) createZoomFilter(config ZoomConfig, duration float64, wid
 	default:
 		// Default zoom in effect
 		if useGPUFilters {
-			baseFilter = fmt.Sprintf("hwupload_cuda,scale_cuda=%d:%d:interp_algo=lanczos,hwdownload,format=yuv420p,zoompan=z='min(1+%.6f*frame,%.3f)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
+			baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='min(1+%.6f*frame,%.3f)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
 				scaledWidth, scaledHeight,
 				ve.Config.Settings.ZoomSpeed, ve.Config.Settings.ZoomIntensity,
 				totalFrames, width, height)
