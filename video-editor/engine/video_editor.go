@@ -234,32 +234,6 @@ func NewVideoEditor(inputDir, outputDir string, config *models.VideoConfig) *Vid
 	return ve
 }
 
-// NEW: Method to get hardware acceleration filter
-func (ve *VideoEditor) getHardwareAccelFilter() string {
-	if !ve.UseGPU {
-		return ""
-	}
-
-	// NVIDIA GPU
-	if ve.isEncoderAvailable("h264_nvenc") {
-		return "hwupload_cuda,"
-	}
-	// AMD GPU
-	if ve.isEncoderAvailable("h264_amf") {
-		return "hwupload,"
-	}
-	// Intel GPU
-	if ve.isEncoderAvailable("h264_qsv") {
-		return "hwupload=extra_hw_frames=64,"
-	}
-	// VAAPI
-	if ve.isEncoderAvailable("h264_vaapi") {
-		return "format=nv12,hwupload,"
-	}
-
-	return ""
-}
-
 // generateZoomConfig creates a configurable zoom configuration
 func (ve *VideoEditor) generateZoomConfig(index int) ZoomConfig {
 	rand.Seed(time.Now().UnixNano() + int64(index))
@@ -310,8 +284,7 @@ func (ve *VideoEditor) generateZoomConfig(index int) ZoomConfig {
 	return config
 }
 
-// Modified createZoomFilter for better T4 performance and error handling
-// Modified createZoomFilter for better T4 performance and error handling
+// Simplified createZoomFilter that doesn't rely on CUDA filters
 func (ve *VideoEditor) createZoomFilter(config ZoomConfig, duration float64, width, height int) string {
 	// Calculate frames for smooth animation
 	totalFrames := int(duration * float64(ve.Config.Settings.FPS))
@@ -328,146 +301,74 @@ func (ve *VideoEditor) createZoomFilter(config ZoomConfig, duration float64, wid
 
 	var baseFilter string
 
-	// Check if we should use GPU acceleration - SIMPLIFIED for T4
-	useGPUFilters := ve.UseGPU && ve.isT4Available() && ve.isEncoderAvailable("h264_nvenc")
-
+	// Use standard filters regardless of GPU - encoding will use GPU
 	switch config.Effect {
 	case ZoomIn:
 		zoomIncrement := ve.Config.Settings.ZoomSpeed * ve.Config.Settings.TransitionSmooth
-		if useGPUFilters {
-			// T4-optimized filter chain - REMOVE hwdownload and format conversion
-			baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='min(1+%.6f*frame,%.3f)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
-				scaledWidth, scaledHeight,
-				zoomIncrement, config.EndScale, totalFrames, width, height)
-		} else {
-			// CPU fallback
-			baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='min(1+%.6f*frame,%.3f)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
-				scaledWidth, scaledHeight,
-				zoomIncrement, config.EndScale, totalFrames, width, height)
-		}
+		baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='min(1+%.6f*frame,%.3f)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
+			scaledWidth, scaledHeight,
+			zoomIncrement, config.EndScale, totalFrames, width, height)
 
 	case ZoomOut:
 		zoomDecrement := ve.Config.Settings.ZoomSpeed * ve.Config.Settings.TransitionSmooth
-		if useGPUFilters {
-			// T4-optimized filter chain - REMOVE hwdownload and format conversion
-			baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='max(%.3f-%.6f*frame,1.0)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
-				scaledWidth, scaledHeight,
-				config.StartScale, zoomDecrement, totalFrames, width, height)
-		} else {
-			// CPU fallback
-			baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='max(%.3f-%.6f*frame,1.0)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
-				scaledWidth, scaledHeight,
-				config.StartScale, zoomDecrement, totalFrames, width, height)
-		}
+		baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='max(%.3f-%.6f*frame,1.0)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
+			scaledWidth, scaledHeight,
+			config.StartScale, zoomDecrement, totalFrames, width, height)
 
 	case ZoomInOut:
 		// Zoom in-out effect: zoom in first half, zoom out second half
 		halfFrames := totalFrames / 2
 		zoomPeak := config.StartScale + 0.3*ve.Config.Settings.ZoomIntensity
 
-		if useGPUFilters {
-			baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='if(lt(frame,%d),1+%.6f*frame,%.3f-%.6f*(frame-%d))':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
-				scaledWidth, scaledHeight,
-				halfFrames, zoomPeak/float64(halfFrames), zoomPeak, zoomPeak/float64(halfFrames), halfFrames,
-				totalFrames, width, height)
-		} else {
-			baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='if(lt(frame,%d),1+%.6f*frame,%.3f-%.6f*(frame-%d))':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
-				scaledWidth, scaledHeight,
-				halfFrames, zoomPeak/float64(halfFrames), zoomPeak, zoomPeak/float64(halfFrames), halfFrames,
-				totalFrames, width, height)
-		}
+		baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='if(lt(frame,%d),1+%.6f*frame,%.3f-%.6f*(frame-%d))':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
+			scaledWidth, scaledHeight,
+			halfFrames, zoomPeak/float64(halfFrames), zoomPeak, zoomPeak/float64(halfFrames), halfFrames,
+			totalFrames, width, height)
 
 	case PanZoom:
 		// Pan and zoom effect with smooth movement
-		if useGPUFilters {
-			baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='%.3f+%.6f*frame':d=%d:x='iw*%.3f+(iw*%.3f-iw*%.3f)*frame/%d':y='ih*%.3f+(ih*%.3f-ih*%.3f)*frame/%d':s=%dx%d",
-				scaledWidth, scaledHeight,
-				config.StartScale, (config.EndScale-config.StartScale)/float64(totalFrames), totalFrames,
-				config.StartX, config.EndX, config.StartX, totalFrames,
-				config.StartY, config.EndY, config.StartY, totalFrames,
-				width, height)
-		} else {
-			baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='%.3f+%.6f*frame':d=%d:x='iw*%.3f+(iw*%.3f-iw*%.3f)*frame/%d':y='ih*%.3f+(ih*%.3f-ih*%.3f)*frame/%d':s=%dx%d",
-				scaledWidth, scaledHeight,
-				config.StartScale, (config.EndScale-config.StartScale)/float64(totalFrames), totalFrames,
-				config.StartX, config.EndX, config.StartX, totalFrames,
-				config.StartY, config.EndY, config.StartY, totalFrames,
-				width, height)
-		}
+		baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='%.3f+%.6f*frame':d=%d:x='iw*%.3f+(iw*%.3f-iw*%.3f)*frame/%d':y='ih*%.3f+(ih*%.3f-ih*%.3f)*frame/%d':s=%dx%d",
+			scaledWidth, scaledHeight,
+			config.StartScale, (config.EndScale-config.StartScale)/float64(totalFrames), totalFrames,
+			config.StartX, config.EndX, config.StartX, totalFrames,
+			config.StartY, config.EndY, config.StartY, totalFrames,
+			width, height)
 
 	default:
 		// Default zoom in effect
-		if useGPUFilters {
-			baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='min(1+%.6f*frame,%.3f)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
-				scaledWidth, scaledHeight,
-				ve.Config.Settings.ZoomSpeed, ve.Config.Settings.ZoomIntensity,
-				totalFrames, width, height)
-		} else {
-			baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='min(1+%.6f*frame,%.3f)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
-				scaledWidth, scaledHeight,
-				ve.Config.Settings.ZoomSpeed, ve.Config.Settings.ZoomIntensity,
-				totalFrames, width, height)
-		}
+		baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='min(1+%.6f*frame,%.3f)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
+			scaledWidth, scaledHeight,
+			ve.Config.Settings.ZoomSpeed, ve.Config.Settings.ZoomIntensity,
+			totalFrames, width, height)
 	}
 
 	return baseFilter
 }
 
-// Add a method to validate GPU setup before processing
-func (ve *VideoEditor) validateGPUSetup() error {
-	if !ve.UseGPU {
-		return nil
-	}
-
-	// Check if CUDA is available
-	cmd := exec.Command("nvidia-smi")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("NVIDIA GPU not available: %v", err)
-	}
-
-	// Check if h264_nvenc is available in FFmpeg
-	if !ve.isEncoderAvailable("h264_nvenc") {
-		return fmt.Errorf("h264_nvenc encoder not available in FFmpeg")
-	}
-
-	// Test a simple GPU operation
-	testCmd := exec.Command("ffmpeg", "-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=1",
-		"-vf", "hwupload_cuda,scale_cuda=160:120,hwdownload,format=yuv420p",
-		"-frames:v", "1", "-f", "null", "-")
-
-	if err := testCmd.Run(); err != nil {
-		log.Printf("⚠️ GPU filter test failed, disabling GPU acceleration: %v", err)
-		ve.UseGPU = false
-		return nil
-	}
-
-	log.Printf("✅ GPU setup validated successfully")
-	return nil
+// Remove the getHardwareAccelFilter method or simplify it
+func (ve *VideoEditor) getHardwareAccelFilter() string {
+	// Don't rely on hardware acceleration filters
+	// GPU encoding will happen at the encoder level, not filter level
+	return ""
 }
 
-// Fix the getOptimalEncoderSettings method to avoid encoder conflicts
+// Simplified getOptimalEncoderSettings that focuses on encoding, not filtering
 func (ve *VideoEditor) getOptimalEncoderSettings() (string, []string) {
-	// Validate GPU setup first
-	if err := ve.validateGPUSetup(); err != nil {
-		log.Printf("GPU validation failed: %v", err)
-		ve.UseGPU = false
-	}
-
 	if ve.UseGPU {
 		// Check for T4 GPU in Google Colab with enhanced detection
 		if ve.isGoogleColab() && ve.isT4Available() {
-			log.Printf("🚀 Using optimized T4 GPU settings for Google Colab")
+			log.Printf("🚀 Using T4 GPU encoding for Google Colab")
 			return "h264_nvenc", []string{
-				"-preset", "fast", // Use standard preset that works with T4
-				"-rc", "vbr", // Variable bitrate
-				"-cq", "21", // Constant quality
-				"-b:v", "6M", // Target bitrate
-				"-maxrate", "8M", // Max bitrate
-				"-bufsize", "12M", // Buffer size
-				"-profile:v", "main", // Use main profile for compatibility
-				"-level", "4.0", // H.264 level
-				"-bf", "2", // B-frames
-				"-g", "120", // GOP size
+				"-preset", "fast",
+				"-rc", "vbr",
+				"-cq", "21",
+				"-b:v", "6M",
+				"-maxrate", "8M",
+				"-bufsize", "12M",
+				"-profile:v", "main",
+				"-level", "4.0",
+				"-bf", "2",
+				"-g", "120",
 			}
 		}
 
@@ -490,10 +391,10 @@ func (ve *VideoEditor) getOptimalEncoderSettings() (string, []string) {
 	log.Printf("🖥️ Using CPU encoding (fallback)")
 	if ve.isGoogleColab() {
 		return "libx264", []string{
-			"-preset", "medium", // Standard libx264 preset
-			"-crf", "23", // Good quality/size ratio
-			"-threads", "2", // Limit threads in Colab
-			"-tune", "film", // Good for slideshow content
+			"-preset", "medium",
+			"-crf", "23",
+			"-threads", "2",
+			"-tune", "film",
 		}
 	}
 
@@ -501,6 +402,64 @@ func (ve *VideoEditor) getOptimalEncoderSettings() (string, []string) {
 		"-preset", "fast",
 		"-crf", "21",
 	}
+}
+
+// Add a method to validate GPU setup before processing - FIXED VERSION
+func (ve *VideoEditor) validateGPUSetup() error {
+	if !ve.UseGPU {
+		return nil
+	}
+
+	log.Printf("🔍 Validating GPU setup...")
+
+	// Check if CUDA is available
+	cmd := exec.Command("nvidia-smi")
+	if err := cmd.Run(); err != nil {
+		log.Printf("nvidia-smi not available: %v", err)
+		return fmt.Errorf("NVIDIA GPU not available: %v", err)
+	}
+	log.Printf("✅ nvidia-smi available")
+
+	// Check if h264_nvenc is available in FFmpeg
+	if !ve.isEncoderAvailable("h264_nvenc") {
+		log.Printf("h264_nvenc encoder not available")
+		return fmt.Errorf("h264_nvenc encoder not available in FFmpeg")
+	}
+	log.Printf("✅ h264_nvenc encoder available")
+
+	// Test NVENC encoding directly (simplified test)
+	log.Printf("🧪 Testing NVENC encoding...")
+	testCmd := exec.Command("ffmpeg",
+		"-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=1",
+		"-c:v", "h264_nvenc", "-preset", "fast", "-cq", "25",
+		"-frames:v", "5", "-f", "null", "-", "-v", "quiet")
+
+	if err := testCmd.Run(); err != nil {
+		log.Printf("⚠️ NVENC encoding test failed: %v", err)
+		// Don't fail completely, just disable GPU
+		ve.UseGPU = false
+		log.Printf("🖥️ Falling back to CPU encoding")
+		return nil
+	}
+
+	log.Printf("✅ NVENC encoding test successful")
+
+	// Only test CUDA filters if we really need them (optional)
+	log.Printf("🧪 Testing CUDA filters (optional)...")
+	cudaTestCmd := exec.Command("ffmpeg",
+		"-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=1",
+		"-vf", "hwupload_cuda,scale_cuda=160:120,hwdownload,format=yuv420p",
+		"-frames:v", "1", "-f", "null", "-", "-v", "quiet")
+
+	if err := cudaTestCmd.Run(); err != nil {
+		log.Printf("⚠️ CUDA filters not available, but NVENC encoding still works: %v", err)
+		// This is OK - we can still use NVENC encoding without CUDA filters
+	} else {
+		log.Printf("✅ CUDA filters available")
+	}
+
+	log.Printf("🚀 GPU setup validated successfully")
+	return nil
 }
 
 // Add method to check Colab's GPU memory and adjust settings
