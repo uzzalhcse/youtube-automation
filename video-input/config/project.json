@@ -10,6 +10,9 @@
     "zoom_speed": 0.0008,
     "zoom_intensity": 1.15,
     "pan_speed": 0.0002,
-    "transition_smooth": 2
+    "transition_smooth": 2,
+    "use_gpu": true,
+    "gpu_device": "0",
+    "max_concurrent_jobs": 2
   }
 }

@@ -56,6 +56,8 @@ type Settings struct {
 	TransitionSmooth  float64 `json:"transition_smooth,omitempty"` // Smoothness factor (0.5 to 2.0, default 1.0)
 	AnimationPreset   string  `json:"animation_preset,omitempty"`  // "gentle", "moderate", "dynamic", "custom"
 	MaxConcurrentJobs int     `json:"max_concurrent_jobs,omitempty"`
+	UseGPU            bool    `json:"use_gpu"`    // NEW: Enable GPU acceleration
+	GPUDevice         string  `json:"gpu_device"` // NEW: GPU device selection
 }
 
 // Example project.json configuration:

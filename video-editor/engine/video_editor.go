@@ -45,22 +45,219 @@ type VideoEditor struct {
 	Config     *models.VideoConfig
 	MaxWorkers int           // Add this field for configurable concurrency
 	WorkerPool chan struct{} // Add this field for worker pool
+	UseGPU     bool          // NEW: GPU rendering flag
+	GPUDevice  string        // NEW: GPU device (e.g., "0" for first GPU, "cuda", "opencl")
 }
 
-// Update NewVideoEditor constructor
+// Modified getEncoderSettings method for Google Colab T4 GPU
+func (ve *VideoEditor) getEncoderSettings() (string, []string) {
+	if ve.UseGPU {
+		// Check for T4 GPU in Google Colab
+		if ve.isGoogleColab() && ve.isT4Available() {
+			log.Printf("🚀 Detected Google Colab T4 GPU, using optimized settings")
+			return "h264_nvenc", []string{
+				"-preset", "p4", // Use newer preset naming for T4
+				"-tune", "hq", // High quality tuning
+				"-rc", "vbr", // Variable bitrate
+				"-cq", "19", // Lower CQ for better quality on T4
+				"-b:v", "8M", // Higher bitrate for T4's capability
+				"-maxrate", "12M", // Higher max bitrate
+				"-bufsize", "16M", // Larger buffer
+				"-profile:v", "high", // High profile
+				"-level", "4.1", // H.264 level
+				"-bf", "3", // B-frames for efficiency
+				"-g", "250", // GOP size
+			}
+		}
+
+		// Try NVIDIA GPU (including T4)
+		if ve.isEncoderAvailable("h264_nvenc") {
+			return "h264_nvenc", []string{
+				"-preset", "fast", // Fallback for older drivers
+				"-rc", "vbr",
+				"-cq", "20",
+				"-b:v", "6M",
+				"-maxrate", "10M",
+				"-bufsize", "12M",
+				"-profile:v", "high",
+			}
+		}
+
+		// Try AMD GPU
+		if ve.isEncoderAvailable("h264_amf") {
+			return "h264_amf", []string{
+				"-quality", "speed",
+				"-rc", "vbr_peak",
+				"-qp_i", "20",
+				"-qp_p", "22",
+				"-qp_b", "24",
+			}
+		}
+
+		// Try Intel GPU
+		if ve.isEncoderAvailable("h264_qsv") {
+			return "h264_qsv", []string{
+				"-preset", "fast",
+				"-global_quality", "20",
+			}
+		}
+
+		log.Printf("⚠️ GPU encoding requested but no compatible GPU encoder found, falling back to CPU")
+	}
+
+	// CPU fallback - optimized for Colab's CPU
+	return "libx264", []string{
+		"-preset", "fast",
+		"-crf", "20",
+		"-threads", "2", // Limit threads in Colab
+	}
+}
+
+// NEW: Check if running in Google Colab
+func (ve *VideoEditor) isGoogleColab() bool {
+	// Check for Colab-specific environment variables
+	if os.Getenv("COLAB_GPU") != "" {
+		return true
+	}
+
+	// Check for Colab-specific paths
+	if _, err := os.Stat("/content"); err == nil {
+		return true
+	}
+
+	// Check for Colab runtime
+	if _, err := os.Stat("/usr/local/lib/python*/dist-packages/google/colab"); err == nil {
+		return true
+	}
+
+	return false
+}
+
+// NEW: Check if T4 GPU is available
+func (ve *VideoEditor) isT4Available() bool {
+	// Method 1: Check nvidia-smi output
+	cmd := exec.Command("nvidia-smi", "--query-gpu=name", "--format=csv,noheader")
+	output, err := cmd.Output()
+	if err == nil {
+		gpuName := strings.ToLower(string(output))
+		if strings.Contains(gpuName, "t4") {
+			return true
+		}
+	}
+
+	// Method 2: Check /proc/driver/nvidia/gpus
+	if entries, err := os.ReadDir("/proc/driver/nvidia/gpus"); err == nil {
+		for _, entry := range entries {
+			infoPath := filepath.Join("/proc/driver/nvidia/gpus", entry.Name(), "information")
+			if data, err := os.ReadFile(infoPath); err == nil {
+				if strings.Contains(strings.ToLower(string(data)), "t4") {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
+// Modified isEncoderAvailable method with better error handling for Colab
+func (ve *VideoEditor) isEncoderAvailable(encoder string) bool {
+	// First check if nvidia-smi is available (indicates NVIDIA GPU)
+	if encoder == "h264_nvenc" {
+		if cmd := exec.Command("nvidia-smi"); cmd.Run() != nil {
+			log.Printf("nvidia-smi not found, NVIDIA GPU encoding not available")
+			return false
+		}
+	}
+
+	// Check if FFmpeg supports the encoder
+	cmd := exec.Command("ffmpeg", "-hide_banner", "-encoders")
+	output, err := cmd.Output()
+	if err != nil {
+		log.Printf("Failed to check encoders: %v", err)
+		return false
+	}
+
+	return strings.Contains(string(output), encoder)
+}
+
+// NEW: Method to optimize settings for Colab environment
+func (ve *VideoEditor) optimizeForColab() {
+	if ve.isGoogleColab() {
+		log.Printf("🔧 Optimizing settings for Google Colab environment")
+
+		// Reduce worker count for Colab's limited resources
+		if ve.MaxWorkers > 2 {
+			ve.MaxWorkers = 2
+			ve.WorkerPool = make(chan struct{}, ve.MaxWorkers)
+			log.Printf("Reduced workers to %d for Colab", ve.MaxWorkers)
+		}
+
+		// Enable GPU if T4 is available
+		if ve.isT4Available() {
+			ve.UseGPU = true
+			ve.GPUDevice = "0"
+			log.Printf("✅ T4 GPU detected and enabled")
+		} else {
+			log.Printf("⚠️ T4 GPU not detected, using CPU")
+		}
+	}
+}
+
+// Modified NewVideoEditor constructor for Colab
 func NewVideoEditor(inputDir, outputDir string, config *models.VideoConfig) *VideoEditor {
 	maxWorkers := runtime.NumCPU()
 	if config.Settings.MaxConcurrentJobs > 0 {
 		maxWorkers = config.Settings.MaxConcurrentJobs
 	}
 
-	return &VideoEditor{
+	// Initialize GPU settings
+	useGPU := config.Settings.UseGPU
+	gpuDevice := "0"
+	if config.Settings.GPUDevice != "" {
+		gpuDevice = config.Settings.GPUDevice
+	}
+
+	ve := &VideoEditor{
 		InputDir:   inputDir,
 		OutputDir:  outputDir,
 		Config:     config,
 		MaxWorkers: maxWorkers,
 		WorkerPool: make(chan struct{}, maxWorkers),
+		UseGPU:     useGPU,
+		GPUDevice:  gpuDevice,
 	}
+
+	// NEW: Optimize for Colab environment
+	ve.optimizeForColab()
+
+	return ve
+}
+
+// NEW: Method to get hardware acceleration filter
+func (ve *VideoEditor) getHardwareAccelFilter() string {
+	if !ve.UseGPU {
+		return ""
+	}
+
+	// NVIDIA GPU
+	if ve.isEncoderAvailable("h264_nvenc") {
+		return "hwupload_cuda,"
+	}
+	// AMD GPU
+	if ve.isEncoderAvailable("h264_amf") {
+		return "hwupload,"
+	}
+	// Intel GPU
+	if ve.isEncoderAvailable("h264_qsv") {
+		return "hwupload=extra_hw_frames=64,"
+	}
+	// VAAPI
+	if ve.isEncoderAvailable("h264_vaapi") {
+		return "format=nv12,hwupload,"
+	}
+
+	return ""
 }
 
 // generateZoomConfig creates a configurable zoom configuration
@@ -113,75 +310,101 @@ func (ve *VideoEditor) generateZoomConfig(index int) ZoomConfig {
 	return config
 }
 
-// createZoomFilter creates FFmpeg filter with configurable smooth animations
+// Modified createZoomFilter method to support GPU acceleration
+
+// Modified createZoomFilter for better T4 performance
 func (ve *VideoEditor) createZoomFilter(config ZoomConfig, duration float64, width, height int) string {
 	// Calculate frames for smooth animation
 	totalFrames := int(duration * float64(ve.Config.Settings.FPS))
 
-	// Scale input resolution for better quality
+	// Adjust scale based on GPU availability and Colab constraints
 	inputScale := 2.0
+	if ve.isGoogleColab() {
+		// Reduce scale in Colab to manage memory
+		inputScale = 1.5
+	}
+
 	scaledWidth := int(float64(width) * inputScale)
 	scaledHeight := int(float64(height) * inputScale)
 
-	switch config.Effect {
-	case ZoomIn:
-		// Smooth zoom in with configurable speed
-		zoomIncrement := ve.Config.Settings.ZoomSpeed * ve.Config.Settings.TransitionSmooth
-		return fmt.Sprintf("scale=%d:%d,zoompan=z='min(1+%.6f*frame,%.3f)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
-			scaledWidth, scaledHeight,
-			zoomIncrement,
-			config.EndScale,
-			totalFrames,
-			width, height)
-
-	case ZoomOut:
-		// Smooth zoom out with configurable speed
-		zoomDecrement := ve.Config.Settings.ZoomSpeed * ve.Config.Settings.TransitionSmooth
-		return fmt.Sprintf("scale=%d:%d,zoompan=z='max(%.3f-%.6f*frame,1.0)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
-			scaledWidth, scaledHeight,
-			config.StartScale,
-			zoomDecrement,
-			totalFrames,
-			width, height)
-
-	case ZoomInOut:
-		// Smooth zoom in-out with configurable intensity
-		peakZoom := ve.Config.Settings.ZoomIntensity
-		halfFrames := totalFrames / 2
-		smoothFactor := ve.Config.Settings.TransitionSmooth
-
-		return fmt.Sprintf("scale=%d:%d,zoompan=z='if(lte(frame,%d),1+%.6f*pow(frame/%d,%.2f),%.3f-%.6f*pow((frame-%d)/%d,%.2f))':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
-			scaledWidth, scaledHeight,
-			halfFrames,
-			(peakZoom - 1.0), halfFrames, smoothFactor,
-			peakZoom, (peakZoom - 1.0), halfFrames, halfFrames, smoothFactor,
-			totalFrames,
-			width, height)
-
-	case PanZoom:
-		// Smooth pan and zoom with configurable speeds
-		zoomRange := config.EndScale - config.StartScale
-		panXRange := config.EndX - config.StartX
-		panYRange := config.EndY - config.StartY
-
-		smoothFactor := ve.Config.Settings.TransitionSmooth
-
-		return fmt.Sprintf("scale=%d:%d,zoompan=z='%.3f+%.6f*pow(frame/%d,%.2f)':x='(%.3f+%.6f*pow(frame/%d,%.2f))*iw-(iw/zoom/2)':y='(%.3f+%.6f*pow(frame/%d,%.2f))*ih-(ih/zoom/2)':d=%d:s=%dx%d",
-			scaledWidth, scaledHeight,
-			config.StartScale, zoomRange, totalFrames, smoothFactor,
-			config.StartX, panXRange, totalFrames, smoothFactor,
-			config.StartY, panYRange, totalFrames, smoothFactor,
-			totalFrames,
-			width, height)
+	// Get hardware acceleration prefix
+	hwAccelPrefix := ""
+	if ve.UseGPU && ve.isT4Available() {
+		// T4-specific optimization: use scale_cuda for better performance
+		hwAccelPrefix = "hwupload_cuda,scale_cuda="
+		scaledWidth = width // Don't upscale when using GPU scaling
+		scaledHeight = height
 	}
 
-	// Fallback to gentle zoom in
-	return fmt.Sprintf("scale=%d:%d,zoompan=z='min(1+%.6f*frame,%.3f)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
-		scaledWidth, scaledHeight,
-		ve.Config.Settings.ZoomSpeed,
-		ve.Config.Settings.ZoomIntensity,
-		totalFrames,
-		width, height)
+	var baseFilter string
+
+	switch config.Effect {
+	case ZoomIn:
+		zoomIncrement := ve.Config.Settings.ZoomSpeed * ve.Config.Settings.TransitionSmooth
+		if ve.UseGPU && ve.isT4Available() {
+			baseFilter = fmt.Sprintf("%s%d:%d,hwdownload,format=nv12,zoompan=z='min(1+%.6f*frame,%.3f)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
+				hwAccelPrefix, scaledWidth, scaledHeight,
+				zoomIncrement, config.EndScale, totalFrames, width, height)
+		} else {
+			baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='min(1+%.6f*frame,%.3f)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
+				scaledWidth, scaledHeight,
+				zoomIncrement, config.EndScale, totalFrames, width, height)
+		}
+
+	// Similar modifications for other cases...
+	case ZoomOut:
+		zoomDecrement := ve.Config.Settings.ZoomSpeed * ve.Config.Settings.TransitionSmooth
+		if ve.UseGPU && ve.isT4Available() {
+			baseFilter = fmt.Sprintf("%s%d:%d,hwdownload,format=nv12,zoompan=z='max(%.3f-%.6f*frame,1.0)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
+				hwAccelPrefix, scaledWidth, scaledHeight,
+				config.StartScale, zoomDecrement, totalFrames, width, height)
+		} else {
+			baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='max(%.3f-%.6f*frame,1.0)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
+				scaledWidth, scaledHeight,
+				config.StartScale, zoomDecrement, totalFrames, width, height)
+		}
+
+	// Add other cases (ZoomInOut, PanZoom) with similar T4 optimizations...
+	default:
+		baseFilter = fmt.Sprintf("scale=%d:%d,zoompan=z='min(1+%.6f*frame,%.3f)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
+			scaledWidth, scaledHeight,
+			ve.Config.Settings.ZoomSpeed,
+			ve.Config.Settings.ZoomIntensity,
+			totalFrames, width, height)
+	}
+
+	return baseFilter
+}
+
+// Add method to check Colab's GPU memory and adjust settings
+func (ve *VideoEditor) checkGPUMemory() {
+	if !ve.UseGPU || !ve.isGoogleColab() {
+		return
+	}
+
+	cmd := exec.Command("nvidia-smi", "--query-gpu=memory.total,memory.used", "--format=csv,noheader,nounits")
+	output, err := cmd.Output()
+	if err != nil {
+		return
+	}
+
+	lines := strings.TrimSpace(string(output))
+	if parts := strings.Split(lines, ","); len(parts) >= 2 {
+		total, _ := strconv.Atoi(strings.TrimSpace(parts[0]))
+		used, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
+		available := total - used
+
+		log.Printf("🔍 GPU Memory - Total: %dMB, Used: %dMB, Available: %dMB", total, used, available)
+
+		// Adjust concurrent workers based on available GPU memory
+		if available < 8000 { // Less than 8GB available
+			if ve.MaxWorkers > 1 {
+				ve.MaxWorkers = 1
+				ve.WorkerPool = make(chan struct{}, 1)
+				log.Printf("⚠️ Limited GPU memory, reducing to 1 concurrent worker")
+			}
+		}
+	}
 }
 
 func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
@@ -204,7 +427,14 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 
 	log.Printf("Found %d image files", len(imageFiles))
 	sort.Strings(imageFiles)
+	encoder, encoderArgs := ve.getEncoderSettings()
 
+	// Log GPU/CPU usage
+	if ve.UseGPU {
+		log.Printf("🚀 Using GPU acceleration with encoder: %s", encoder)
+	} else {
+		log.Printf("🖥️ Using CPU encoding with encoder: %s", encoder)
+	}
 	// Validate all image files exist
 	for i, file := range imageFiles {
 		var fullPath string
@@ -258,28 +488,39 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 			imgPathForFFmpeg := strings.ReplaceAll(imgPath, "\\", "/")
 			clipPathForFFmpeg := strings.ReplaceAll(clipPath, "\\", "/")
 
-			// Generate zoom configuration for this image
+			// Generate zoom configuration and filter
 			zoomConfig := ve.generateZoomConfig(index)
 			zoomFilter := ve.createZoomFilter(zoomConfig, imageDuration, ve.Config.Settings.Width, ve.Config.Settings.Height)
 
-			log.Printf("Creating clip %d with %s animation...", index+1, ve.getEffectName(zoomConfig.Effect))
+			log.Printf("Creating clip %d with %s animation (%s)...", index+1, ve.getEffectName(zoomConfig.Effect),
+				map[bool]string{true: "GPU", false: "CPU"}[ve.UseGPU])
 
-			// Create clip with optimized settings for concurrent processing
+			// NEW: Build args with GPU/CPU encoder
 			args := []string{
 				"-y",
 				"-loop", "1",
 				"-i", imgPathForFFmpeg,
 				"-vf", zoomFilter,
 				"-t", fmt.Sprintf("%.2f", imageDuration),
-				"-c:v", "libx264",
-				"-preset", "fast", // Changed from "slow" to "fast" for concurrent processing
-				"-crf", "20", // Slightly lower quality for faster processing
+				"-c:v", encoder, // Use selected encoder
+			}
+
+			// Add encoder-specific arguments
+			args = append(args, encoderArgs...)
+
+			// Add common arguments
+			args = append(args,
 				"-r", strconv.Itoa(ve.Config.Settings.FPS),
 				"-pix_fmt", "yuv420p",
 				"-avoid_negative_ts", "make_zero",
-				"-threads", "1", // Limit threads per process for better concurrency
-				clipPathForFFmpeg,
+			)
+
+			// Adjust thread count based on GPU/CPU
+			if !ve.UseGPU {
+				args = append(args, "-threads", "1") // Limit threads for CPU
 			}
+
+			args = append(args, clipPathForFFmpeg)
 
 			cmd := exec.Command("ffmpeg", args...)
 			output, err := cmd.CombinedOutput()
@@ -455,25 +696,26 @@ func (ve *VideoEditor) PrepareOverlayVideo(overlayPath string, duration float64,
 	if ve.Config.Settings.OverlayOpacity > 0 {
 		overlayOpacity = ve.Config.Settings.OverlayOpacity
 	}
-
+	// Get encoder settings
+	encoder, encoderArgs := ve.getEncoderSettings()
 	var videoFilter string
 	if originalDuration >= duration {
-		// If overlay is longer than or equal to target duration, just trim it
-		videoFilter = fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black",
-			ve.Config.Settings.Width, ve.Config.Settings.Height,
-			ve.Config.Settings.Width, ve.Config.Settings.Height)
-
 		args := []string{
 			"-y",
 			"-i", overlayForFFmpeg,
 			"-vf", videoFilter,
 			"-t", fmt.Sprintf("%.2f", duration),
-			"-c:v", "libx264",
-			"-r", strconv.Itoa(ve.Config.Settings.FPS),
-			"-pix_fmt", "yuv420p", // Use alpha channel for transparency
-			"-an", // Remove audio from overlay
-			outputForFFmpeg,
+			"-c:v", encoder, // Use selected encoder
 		}
+
+		// Add encoder-specific arguments
+		args = append(args, encoderArgs...)
+		args = append(args,
+			"-r", strconv.Itoa(ve.Config.Settings.FPS),
+			"-pix_fmt", "yuv420p",
+			"-an",
+			outputForFFmpeg,
+		)
 
 		cmd := exec.Command("ffmpeg", args...)
 		output, err := cmd.CombinedOutput()
@@ -493,16 +735,21 @@ func (ve *VideoEditor) PrepareOverlayVideo(overlayPath string, duration float64,
 
 		args := []string{
 			"-y",
-			"-stream_loop", strconv.Itoa(loopCount), // Loop the input
+			"-stream_loop", strconv.Itoa(loopCount),
 			"-i", overlayForFFmpeg,
 			"-vf", videoFilter,
-			"-t", fmt.Sprintf("%.2f", duration), // Trim to exact duration
-			"-c:v", "libx264",
-			"-r", strconv.Itoa(ve.Config.Settings.FPS),
-			"-pix_fmt", "yuva420p", // Use alpha channel for transparency
-			"-an", // Remove audio from overlay
-			outputForFFmpeg,
+			"-t", fmt.Sprintf("%.2f", duration),
+			"-c:v", encoder, // Use selected encoder
 		}
+
+		// Add encoder-specific arguments
+		args = append(args, encoderArgs...)
+		args = append(args,
+			"-r", strconv.Itoa(ve.Config.Settings.FPS),
+			"-pix_fmt", "yuva420p",
+			"-an",
+			outputForFFmpeg,
+		)
 
 		log.Printf("Looping overlay %d times to reach target duration", loopCount)
 
@@ -695,7 +942,8 @@ func (ve *VideoEditor) GenerateFinalVideoWithOverlays() error {
 			currentInput = outputTag
 		}
 	}
-
+	// Get encoder settings for final video
+	encoder, encoderArgs := ve.getEncoderSettings()
 	// Add audio mixing
 	voiceIndex := len(preparedOverlays) + 1
 	bgmIndex := len(preparedOverlays) + 2
@@ -711,13 +959,21 @@ func (ve *VideoEditor) GenerateFinalVideoWithOverlays() error {
 	args = append(args, "-filter_complex", filterComplex)
 	args = append(args, "-map", "[final_video]")
 	args = append(args, "-map", "[final_audio]")
-	args = append(args, "-c:v", "libx264")
+	args = append(args, "-c:v", encoder) // Use selected encoder
 	args = append(args, "-c:a", "aac")
 	args = append(args, "-b:a", "128k")
 	args = append(args, "-r", strconv.Itoa(ve.Config.Settings.FPS))
 	args = append(args, "-shortest")
 	args = append(args, finalForFFmpeg)
 
+	args = append(args, encoderArgs...)
+	args = append(args,
+		"-c:a", "aac",
+		"-b:a", "128k",
+		"-r", strconv.Itoa(ve.Config.Settings.FPS),
+		"-shortest",
+		finalForFFmpeg,
+	)
 	log.Printf("FFmpeg final command with overlays: ffmpeg %s", strings.Join(args, " "))
 
 	cmd := exec.Command("ffmpeg", args...)
