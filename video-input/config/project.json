@@ -5,7 +5,7 @@
     "fps": 30,
     "voice_volume": 1.0,
     "bgm_volume": 0.3,
-    "overlay_opacity": 0.3,
+    "overlay_opacity": 0.5,
     "animation_preset": "gentle",
     "zoom_speed": 0.0002,
     "zoom_intensity": 1.15,
@@ -16,7 +16,7 @@
     "max_concurrent_jobs": 8,
     "use_partial_image_duration": true,
     "images_duration_minutes": 0.13,
-    "black_screen_color": "black",
+    "black_screen_color": "#1e1e1e",
     "use_animation_effects": true
   }
 }
