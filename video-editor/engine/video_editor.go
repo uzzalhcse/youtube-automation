@@ -3,7 +3,6 @@ package engine
 import (
 	"fmt"
 	"log"
-	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 	"youtube_automation/video-editor/models"
 	"youtube_automation/video-editor/utils"
 )
@@ -49,161 +47,6 @@ type VideoEditor struct {
 	GPUDevice  string        // NEW: GPU device (e.g., "0" for first GPU, "cuda", "opencl")
 }
 
-// Modified getEncoderSettings method for Google Colab T4 GPU
-func (ve *VideoEditor) getEncoderSettings() (string, []string) {
-	if ve.UseGPU {
-		// Check for T4 GPU in Google Colab
-		if ve.isGoogleColab() && ve.isT4Available() {
-			log.Printf("🚀 Detected Google Colab T4 GPU, using optimized settings")
-			return "h264_nvenc", []string{
-				"-preset", "p4", // Use newer preset naming for T4
-				"-tune", "hq", // High quality tuning
-				"-rc", "vbr", // Variable bitrate
-				"-cq", "19", // Lower CQ for better quality on T4
-				"-b:v", "8M", // Higher bitrate for T4's capability
-				"-maxrate", "12M", // Higher max bitrate
-				"-bufsize", "16M", // Larger buffer
-				"-profile:v", "high", // High profile
-				"-level", "4.1", // H.264 level
-				"-bf", "3", // B-frames for efficiency
-				"-g", "250", // GOP size
-			}
-		}
-
-		// Try NVIDIA GPU (including T4)
-		if ve.isEncoderAvailable("h264_nvenc") {
-			return "h264_nvenc", []string{
-				"-preset", "fast", // Fallback for older drivers
-				"-rc", "vbr",
-				"-cq", "20",
-				"-b:v", "6M",
-				"-maxrate", "10M",
-				"-bufsize", "12M",
-				"-profile:v", "high",
-			}
-		}
-
-		// Try AMD GPU
-		if ve.isEncoderAvailable("h264_amf") {
-			return "h264_amf", []string{
-				"-quality", "speed",
-				"-rc", "vbr_peak",
-				"-qp_i", "20",
-				"-qp_p", "22",
-				"-qp_b", "24",
-			}
-		}
-
-		// Try Intel GPU
-		if ve.isEncoderAvailable("h264_qsv") {
-			return "h264_qsv", []string{
-				"-preset", "fast",
-				"-global_quality", "20",
-			}
-		}
-
-		log.Printf("⚠️ GPU encoding requested but no compatible GPU encoder found, falling back to CPU")
-	}
-
-	// CPU fallback - optimized for Colab's CPU
-	return "libx264", []string{
-		"-preset", "fast",
-		"-crf", "20",
-		"-threads", "2", // Limit threads in Colab
-	}
-}
-
-// NEW: Check if running in Google Colab
-func (ve *VideoEditor) isGoogleColab() bool {
-	// Check for Colab-specific environment variables
-	if os.Getenv("COLAB_GPU") != "" {
-		return true
-	}
-
-	// Check for Colab-specific paths
-	if _, err := os.Stat("/content"); err == nil {
-		return true
-	}
-
-	// Check for Colab runtime
-	if _, err := os.Stat("/usr/local/lib/python*/dist-packages/google/colab"); err == nil {
-		return true
-	}
-
-	return false
-}
-
-// NEW: Check if T4 GPU is available
-func (ve *VideoEditor) isT4Available() bool {
-	// Method 1: Check nvidia-smi output
-	cmd := exec.Command("nvidia-smi", "--query-gpu=name", "--format=csv,noheader")
-	output, err := cmd.Output()
-	if err == nil {
-		gpuName := strings.ToLower(string(output))
-		if strings.Contains(gpuName, "t4") {
-			return true
-		}
-	}
-
-	// Method 2: Check /proc/driver/nvidia/gpus
-	if entries, err := os.ReadDir("/proc/driver/nvidia/gpus"); err == nil {
-		for _, entry := range entries {
-			infoPath := filepath.Join("/proc/driver/nvidia/gpus", entry.Name(), "information")
-			if data, err := os.ReadFile(infoPath); err == nil {
-				if strings.Contains(strings.ToLower(string(data)), "t4") {
-					return true
-				}
-			}
-		}
-	}
-
-	return false
-}
-
-// Modified isEncoderAvailable method with better error handling for Colab
-func (ve *VideoEditor) isEncoderAvailable(encoder string) bool {
-	// First check if nvidia-smi is available (indicates NVIDIA GPU)
-	if encoder == "h264_nvenc" {
-		if cmd := exec.Command("nvidia-smi"); cmd.Run() != nil {
-			log.Printf("nvidia-smi not found, NVIDIA GPU encoding not available")
-			return false
-		}
-	}
-
-	// Check if FFmpeg supports the encoder
-	cmd := exec.Command("ffmpeg", "-hide_banner", "-encoders")
-	output, err := cmd.Output()
-	if err != nil {
-		log.Printf("Failed to check encoders: %v", err)
-		return false
-	}
-
-	return strings.Contains(string(output), encoder)
-}
-
-// NEW: Method to optimize settings for Colab environment
-func (ve *VideoEditor) optimizeForColab() {
-	if ve.isGoogleColab() {
-		log.Printf("🔧 Optimizing settings for Google Colab environment")
-
-		// Reduce worker count for Colab's limited resources
-		if ve.MaxWorkers > 2 {
-			ve.MaxWorkers = 2
-			ve.WorkerPool = make(chan struct{}, ve.MaxWorkers)
-			log.Printf("Reduced workers to %d for Colab", ve.MaxWorkers)
-		}
-
-		// Enable GPU if T4 is available
-		if ve.isT4Available() {
-			ve.UseGPU = true
-			ve.GPUDevice = "0"
-			log.Printf("✅ T4 GPU detected and enabled")
-		} else {
-			log.Printf("⚠️ T4 GPU not detected, using CPU")
-		}
-	}
-}
-
 // Modified NewVideoEditor constructor for Colab
 func NewVideoEditor(inputDir, outputDir string, config *models.VideoConfig) *VideoEditor {
 	maxWorkers := runtime.NumCPU()
@@ -232,56 +75,6 @@ func NewVideoEditor(inputDir, outputDir string, config *models.VideoConfig) *Vid
 	ve.optimizeForColab()
 
 	return ve
-}
-
-// generateZoomConfig creates a configurable zoom configuration
-func (ve *VideoEditor) generateZoomConfig(index int) ZoomConfig {
-	rand.Seed(time.Now().UnixNano() + int64(index))
-
-	effects := []ZoomEffect{ZoomIn, ZoomOut, ZoomInOut, PanZoom}
-	effect := effects[rand.Intn(len(effects))]
-
-	config := ZoomConfig{
-		Effect: effect,
-		StartX: 0.5,
-		StartY: 0.5,
-		EndX:   0.5,
-		EndY:   0.5,
-	}
-
-	// Use configurable zoom intensity
-	baseZoom := ve.Config.Settings.ZoomIntensity
-	zoomVariation := 0.1 * ve.Config.Settings.TransitionSmooth
-
-	switch effect {
-	case ZoomIn:
-		config.StartScale = 1.0
-		config.EndScale = baseZoom + rand.Float64()*zoomVariation
-
-	case ZoomOut:
-		config.StartScale = baseZoom + rand.Float64()*zoomVariation
-		config.EndScale = 1.0
-
-	case ZoomInOut:
-		config.StartScale = 1.0
-		config.EndScale = 1.0
-		// Peak zoom will be handled in the filter
-
-	case PanZoom:
-		config.StartScale = baseZoom * 0.9
-		config.EndScale = baseZoom * 1.1
-
-		// More controlled panning with configurable speed
-		panRange := 0.2 * ve.Config.Settings.TransitionSmooth
-		centerOffset := (1.0 - panRange) / 2
-
-		config.StartX = centerOffset + rand.Float64()*panRange
-		config.StartY = centerOffset + rand.Float64()*panRange
-		config.EndX = centerOffset + rand.Float64()*panRange
-		config.EndY = centerOffset + rand.Float64()*panRange
-	}
-
-	return config
 }
 
 // Simplified createZoomFilter that doesn't rely on CUDA filters
@@ -343,154 +136,6 @@ func (ve *VideoEditor) createZoomFilter(config ZoomConfig, duration float64, wid
 	}
 
 	return baseFilter
-}
-
-// Remove the getHardwareAccelFilter method or simplify it
-func (ve *VideoEditor) getHardwareAccelFilter() string {
-	// Don't rely on hardware acceleration filters
-	// GPU encoding will happen at the encoder level, not filter level
-	return ""
-}
-
-// Simplified getOptimalEncoderSettings that focuses on encoding, not filtering
-func (ve *VideoEditor) getOptimalEncoderSettings() (string, []string) {
-	if ve.UseGPU {
-		// Check for T4 GPU in Google Colab with enhanced detection
-		if ve.isGoogleColab() && ve.isT4Available() {
-			log.Printf("🚀 Using T4 GPU encoding for Google Colab")
-			return "h264_nvenc", []string{
-				"-preset", "fast",
-				"-rc", "vbr",
-				"-cq", "21",
-				"-b:v", "6M",
-				"-maxrate", "8M",
-				"-bufsize", "12M",
-				"-profile:v", "main",
-				"-level", "4.0",
-				"-bf", "2",
-				"-g", "120",
-			}
-		}
-
-		// Fallback NVIDIA settings
-		if ve.isEncoderAvailable("h264_nvenc") {
-			log.Printf("🚀 Using standard NVIDIA GPU encoding")
-			return "h264_nvenc", []string{
-				"-preset", "medium",
-				"-rc", "vbr",
-				"-cq", "23",
-				"-b:v", "4M",
-				"-maxrate", "6M",
-				"-bufsize", "8M",
-				"-profile:v", "main",
-			}
-		}
-	}
-
-	// CPU fallback with Colab optimization
-	log.Printf("🖥️ Using CPU encoding (fallback)")
-	if ve.isGoogleColab() {
-		return "libx264", []string{
-			"-preset", "medium",
-			"-crf", "23",
-			"-threads", "2",
-			"-tune", "film",
-		}
-	}
-
-	return "libx264", []string{
-		"-preset", "fast",
-		"-crf", "21",
-	}
-}
-
-// Add a method to validate GPU setup before processing - FIXED VERSION
-func (ve *VideoEditor) validateGPUSetup() error {
-	if !ve.UseGPU {
-		return nil
-	}
-
-	log.Printf("🔍 Validating GPU setup...")
-
-	// Check if CUDA is available
-	cmd := exec.Command("nvidia-smi")
-	if err := cmd.Run(); err != nil {
-		log.Printf("nvidia-smi not available: %v", err)
-		return fmt.Errorf("NVIDIA GPU not available: %v", err)
-	}
-	log.Printf("✅ nvidia-smi available")
-
-	// Check if h264_nvenc is available in FFmpeg
-	if !ve.isEncoderAvailable("h264_nvenc") {
-		log.Printf("h264_nvenc encoder not available")
-		return fmt.Errorf("h264_nvenc encoder not available in FFmpeg")
-	}
-	log.Printf("✅ h264_nvenc encoder available")
-
-	// Test NVENC encoding directly (simplified test)
-	log.Printf("🧪 Testing NVENC encoding...")
-	testCmd := exec.Command("ffmpeg",
-		"-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=1",
-		"-c:v", "h264_nvenc", "-preset", "fast", "-cq", "25",
-		"-frames:v", "5", "-f", "null", "-", "-v", "quiet")
-
-	if err := testCmd.Run(); err != nil {
-		log.Printf("⚠️ NVENC encoding test failed: %v", err)
-		// Don't fail completely, just disable GPU
-		ve.UseGPU = false
-		log.Printf("🖥️ Falling back to CPU encoding")
-		return nil
-	}
-
-	log.Printf("✅ NVENC encoding test successful")
-
-	// Only test CUDA filters if we really need them (optional)
-	log.Printf("🧪 Testing CUDA filters (optional)...")
-	cudaTestCmd := exec.Command("ffmpeg",
-		"-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=1",
-		"-vf", "hwupload_cuda,scale_cuda=160:120,hwdownload,format=yuv420p",
-		"-frames:v", "1", "-f", "null", "-", "-v", "quiet")
-
-	if err := cudaTestCmd.Run(); err != nil {
-		log.Printf("⚠️ CUDA filters not available, but NVENC encoding still works: %v", err)
-		// This is OK - we can still use NVENC encoding without CUDA filters
-	} else {
-		log.Printf("✅ CUDA filters available")
-	}
-
-	log.Printf("🚀 GPU setup validated successfully")
-	return nil
-}
-
-// Add method to check Colab's GPU memory and adjust settings
-func (ve *VideoEditor) checkGPUMemory() {
-	if !ve.UseGPU || !ve.isGoogleColab() {
-		return
-	}
-
-	cmd := exec.Command("nvidia-smi", "--query-gpu=memory.total,memory.used", "--format=csv,noheader,nounits")
-	output, err := cmd.Output()
-	if err != nil {
-		return
-	}
-
-	lines := strings.TrimSpace(string(output))
-	if parts := strings.Split(lines, ","); len(parts) >= 2 {
-		total, _ := strconv.Atoi(strings.TrimSpace(parts[0]))
-		used, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
-		available := total - used
-
-		log.Printf("🔍 GPU Memory - Total: %dMB, Used: %dMB, Available: %dMB", total, used, available)
-
-		// Adjust concurrent workers based on available GPU memory
-		if available < 8000 { // Less than 8GB available
-			if ve.MaxWorkers > 1 {
-				ve.MaxWorkers = 1
-				ve.WorkerPool = make(chan struct{}, 1)
-				log.Printf("⚠️ Limited GPU memory, reducing to 1 concurrent worker")
-			}
-		}
-	}
 }
 
 func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
@@ -711,53 +356,6 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 	}
 
 	return nil
-}
-
-// getEffectName returns human-readable effect name
-func (ve *VideoEditor) getEffectName(effect ZoomEffect) string {
-	switch effect {
-	case ZoomIn:
-		return "zoom in"
-	case ZoomOut:
-		return "zoom out"
-	case ZoomInOut:
-		return "zoom in-out"
-	case PanZoom:
-		return "pan & zoom"
-	default:
-		return "zoom"
-	}
-}
-
-// GetOverlayVideos finds and returns all overlay video files
-func (ve *VideoEditor) GetOverlayVideos() ([]string, error) {
-	overlayDir := filepath.Join(ve.InputDir, "overlays")
-
-	// Check if overlay directory exists
-	if _, err := os.Stat(overlayDir); os.IsNotExist(err) {
-		log.Printf("No overlay directory found at %s", overlayDir)
-		return []string{}, nil
-	}
-
-	// Get all video files in overlay directory
-	overlayFiles, err := utils.GetVideoFiles(overlayDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get overlay video files: %v", err)
-	}
-
-	// Convert to full paths
-	var fullPaths []string
-	for _, file := range overlayFiles {
-		fullPath := filepath.Join(overlayDir, file)
-		if _, err := os.Stat(fullPath); err == nil {
-			fullPaths = append(fullPaths, fullPath)
-		}
-	}
-
-	sort.Strings(fullPaths)
-	log.Printf("Found %d overlay videos", len(fullPaths))
-
-	return fullPaths, nil
 }
 
 // PrepareOverlayVideo processes a single overlay video to fit the screen and loop for the required duration
@@ -1190,30 +788,6 @@ func (ve *VideoEditor) GenerateFinalVideoSimplified() error {
 		log.Printf("Final video duration: %.2f seconds", finalDuration)
 	}
 
-	return nil
-}
-
-// Add a method to test encoder compatibility before use
-func (ve *VideoEditor) testEncoderCompatibility() error {
-	if !ve.UseGPU {
-		return nil
-	}
-
-	log.Printf("🧪 Testing encoder compatibility...")
-
-	// Test h264_nvenc with a simple encode
-	testCmd := exec.Command("ffmpeg",
-		"-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=1",
-		"-c:v", "h264_nvenc", "-preset", "fast", "-cq", "25",
-		"-frames:v", "5", "-f", "null", "-")
-
-	if err := testCmd.Run(); err != nil {
-		log.Printf("⚠️ h264_nvenc encoder test failed: %v", err)
-		ve.UseGPU = false
-		return fmt.Errorf("GPU encoder not compatible")
-	}
-
-	log.Printf("✅ GPU encoder compatibility test passed")
 	return nil
 }
 
