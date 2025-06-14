@@ -7,9 +7,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"youtube_automation/video-editor/models"
 	"youtube_automation/video-editor/utils"
@@ -36,19 +38,28 @@ type ZoomConfig struct {
 	EndY       float64 // Ending Y position
 }
 
-// VideoEditor handles all video editing operations
+// Add these fields to VideoEditor struct
 type VideoEditor struct {
-	InputDir  string
-	OutputDir string
-	Config    *models.VideoConfig
+	InputDir   string
+	OutputDir  string
+	Config     *models.VideoConfig
+	MaxWorkers int           // Add this field for configurable concurrency
+	WorkerPool chan struct{} // Add this field for worker pool
 }
 
-// NewVideoEditor creates a new video editor instance
+// Update NewVideoEditor constructor
 func NewVideoEditor(inputDir, outputDir string, config *models.VideoConfig) *VideoEditor {
+	maxWorkers := runtime.NumCPU()
+	if config.Settings.MaxConcurrentJobs > 0 {
+		maxWorkers = config.Settings.MaxConcurrentJobs
+	}
+
 	return &VideoEditor{
-		InputDir:  inputDir,
-		OutputDir: outputDir,
-		Config:    config,
+		InputDir:   inputDir,
+		OutputDir:  outputDir,
+		Config:     config,
+		MaxWorkers: maxWorkers,
+		WorkerPool: make(chan struct{}, maxWorkers),
 	}
 }
 
@@ -173,7 +184,6 @@ func (ve *VideoEditor) createZoomFilter(config ZoomConfig, duration float64, wid
 		width, height)
 }
 
-// CreateSlideshow generates a slideshow from images with zoom animations
 func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 	imagesDir := filepath.Join(ve.InputDir, "images")
 	outputPath := filepath.Join(ve.OutputDir, "slideshow.mp4")
@@ -193,8 +203,6 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 	}
 
 	log.Printf("Found %d image files", len(imageFiles))
-
-	// Sort image files
 	sort.Strings(imageFiles)
 
 	// Validate all image files exist
@@ -215,72 +223,109 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 		if _, err := os.Stat(imageFiles[i]); os.IsNotExist(err) {
 			return fmt.Errorf("image file does not exist: %s", imageFiles[i])
 		}
-
-		log.Printf("Image file %d: %s", i+1, imageFiles[i])
 	}
 
 	// Calculate duration per image based on target duration
 	imageDuration := targetDuration / float64(len(imageFiles))
 	log.Printf("Duration per image: %.2f seconds (total: %.2f seconds)", imageDuration, targetDuration)
 
-	// Convert paths for FFmpeg compatibility
-	outputPathForFFmpeg := strings.ReplaceAll(outputPath, "\\", "/")
-
 	// Ensure output directory exists
 	if err := os.MkdirAll(ve.OutputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %v", err)
 	}
 
-	// Create individual video clips with zoom animations
+	// CONCURRENT PROCESSING: Create individual video clips with zoom animations
 	var videoClips []string
+	videoClips = make([]string, len(imageFiles)) // Pre-allocate slice
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	errorChan := make(chan error, len(imageFiles))
+
+	log.Printf("Using %d concurrent workers for clip generation", ve.MaxWorkers)
+
+	// Process clips concurrently
 	for i, img := range imageFiles {
-		imgPath := strings.ReplaceAll(img, "\\", "/")
-		clipPath := filepath.Join(ve.OutputDir, fmt.Sprintf("clip_%d.mp4", i))
-		clipPathForFFmpeg := strings.ReplaceAll(clipPath, "\\", "/")
+		wg.Add(1)
+		go func(index int, imgPath string) {
+			defer wg.Done()
 
-		// Generate zoom configuration for this image
-		zoomConfig := ve.generateZoomConfig(i)
-		zoomFilter := ve.createZoomFilter(zoomConfig, imageDuration, ve.Config.Settings.Width, ve.Config.Settings.Height)
+			// Limit concurrent workers
+			ve.WorkerPool <- struct{}{}
+			defer func() { <-ve.WorkerPool }()
 
-		log.Printf("Creating clip %d with %s animation...", i+1, ve.getEffectName(zoomConfig.Effect))
-		log.Printf("Clip path: %s", clipPath)
+			clipPath := filepath.Join(ve.OutputDir, fmt.Sprintf("clip_%d.mp4", index))
+			imgPathForFFmpeg := strings.ReplaceAll(imgPath, "\\", "/")
+			clipPathForFFmpeg := strings.ReplaceAll(clipPath, "\\", "/")
 
-		// Add smooth transitions and higher quality settings
-		args := []string{
-			"-y",
-			"-loop", "1",
-			"-i", imgPath,
-			"-vf", zoomFilter,
-			"-t", fmt.Sprintf("%.2f", imageDuration),
-			"-c:v", "libx264",
-			"-preset", "slow", // Higher quality preset
-			"-crf", "18", // High quality constant rate factor
-			"-r", strconv.Itoa(ve.Config.Settings.FPS),
-			"-pix_fmt", "yuv420p",
-			"-avoid_negative_ts", "make_zero",
-			clipPathForFFmpeg,
-		}
+			// Generate zoom configuration for this image
+			zoomConfig := ve.generateZoomConfig(index)
+			zoomFilter := ve.createZoomFilter(zoomConfig, imageDuration, ve.Config.Settings.Width, ve.Config.Settings.Height)
 
-		cmd := exec.Command("ffmpeg", args...)
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			log.Printf("FFmpeg clip creation output: %s", string(output))
-			return fmt.Errorf("failed to create clip %d: %v", i, err)
-		}
+			log.Printf("Creating clip %d with %s animation...", index+1, ve.getEffectName(zoomConfig.Effect))
 
-		// Verify clip was created
-		if _, err := os.Stat(clipPath); os.IsNotExist(err) {
-			return fmt.Errorf("clip file was not created: %s", clipPath)
-		}
+			// Create clip with optimized settings for concurrent processing
+			args := []string{
+				"-y",
+				"-loop", "1",
+				"-i", imgPathForFFmpeg,
+				"-vf", zoomFilter,
+				"-t", fmt.Sprintf("%.2f", imageDuration),
+				"-c:v", "libx264",
+				"-preset", "fast", // Changed from "slow" to "fast" for concurrent processing
+				"-crf", "20", // Slightly lower quality for faster processing
+				"-r", strconv.Itoa(ve.Config.Settings.FPS),
+				"-pix_fmt", "yuv420p",
+				"-avoid_negative_ts", "make_zero",
+				"-threads", "1", // Limit threads per process for better concurrency
+				clipPathForFFmpeg,
+			}
 
-		videoClips = append(videoClips, clipPath)
+			cmd := exec.Command("ffmpeg", args...)
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				log.Printf("FFmpeg clip creation output: %s", string(output))
+				errorChan <- fmt.Errorf("failed to create clip %d: %v", index, err)
+				return
+			}
+
+			// Verify clip was created
+			if _, err := os.Stat(clipPath); os.IsNotExist(err) {
+				errorChan <- fmt.Errorf("clip file was not created: %s", clipPath)
+				return
+			}
+
+			// Thread-safe assignment to slice
+			mu.Lock()
+			videoClips[index] = clipPath
+			mu.Unlock()
+		}(i, img)
 	}
 
-	// Create a list file for concatenation
+	// Wait for all clips to be created
+	wg.Wait()
+	close(errorChan)
+
+	// Check for errors
+	for err := range errorChan {
+		if err != nil {
+			return err
+		}
+	}
+
+	// Remove any empty entries (shouldn't happen, but safety check)
+	var validClips []string
+	for _, clip := range videoClips {
+		if clip != "" {
+			validClips = append(validClips, clip)
+		}
+	}
+	videoClips = validClips
+
+	// Create a list file for concatenation (rest remains the same)
 	listFile := filepath.Join(ve.OutputDir, "clips_list.txt")
 	listContent := ""
 	for _, clip := range videoClips {
-		// Use absolute paths in the list file
 		absPath, err := filepath.Abs(clip)
 		if err != nil {
 			absPath = clip
@@ -290,14 +335,13 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 	}
 
 	log.Printf("Creating clips list file: %s", listFile)
-	log.Printf("List content:\n%s", listContent)
-
 	if err := os.WriteFile(listFile, []byte(listContent), 0644); err != nil {
 		return fmt.Errorf("failed to create clips list file: %v", err)
 	}
 
-	// Concatenate all clips with smooth transitions
+	// Concatenate all clips
 	listFileForFFmpeg := strings.ReplaceAll(listFile, "\\", "/")
+	outputPathForFFmpeg := strings.ReplaceAll(outputPath, "\\", "/")
 
 	log.Printf("Concatenating %d animated clips...", len(videoClips))
 
@@ -306,7 +350,7 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 		"-f", "concat",
 		"-safe", "0",
 		"-i", listFileForFFmpeg,
-		"-c", "copy", // Copy streams for faster processing
+		"-c", "copy",
 		outputPathForFFmpeg,
 	}
 
@@ -317,7 +361,7 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 		return fmt.Errorf("failed to concatenate clips: %v", err)
 	}
 
-	log.Printf("✓ Animated slideshow created successfully")
+	log.Printf("✓ Animated slideshow created successfully using concurrent processing")
 
 	// Clean up temporary files
 	for _, clip := range videoClips {
@@ -329,7 +373,7 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 		log.Printf("Warning: failed to clean up list file: %v", err)
 	}
 
-	// Verify output file exists and get its duration
+	// Verify output file exists
 	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
 		return fmt.Errorf("slideshow output file was not created: %s", outputPath)
 	}
@@ -474,7 +518,65 @@ func (ve *VideoEditor) PrepareOverlayVideo(overlayPath string, duration float64,
 	return outputPath, nil
 }
 
+// Add concurrent overlay preparation method
+func (ve *VideoEditor) PrepareOverlayVideosConcurrently(overlayVideos []string, duration float64) ([]string, error) {
+	if len(overlayVideos) == 0 {
+		return []string{}, nil
+	}
+
+	var preparedOverlays []string
+	preparedOverlays = make([]string, len(overlayVideos))
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	errorChan := make(chan error, len(overlayVideos))
+
+	log.Printf("Preparing %d overlay videos concurrently", len(overlayVideos))
+
+	for i, overlayPath := range overlayVideos {
+		wg.Add(1)
+		go func(index int, path string) {
+			defer wg.Done()
+
+			// Limit concurrent workers
+			ve.WorkerPool <- struct{}{}
+			defer func() { <-ve.WorkerPool }()
+
+			preparedOverlay, err := ve.PrepareOverlayVideo(path, duration, index)
+			if err != nil {
+				errorChan <- fmt.Errorf("failed to prepare overlay %d: %v", index, err)
+				return
+			}
+
+			mu.Lock()
+			preparedOverlays[index] = preparedOverlay
+			mu.Unlock()
+		}(i, overlayPath)
+	}
+
+	wg.Wait()
+	close(errorChan)
+
+	// Check for errors
+	for err := range errorChan {
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Remove empty entries
+	var validOverlays []string
+	for _, overlay := range preparedOverlays {
+		if overlay != "" {
+			validOverlays = append(validOverlays, overlay)
+		}
+	}
+
+	return validOverlays, nil
+}
+
 // GenerateFinalVideoWithOverlays creates final video with overlay support
+// Update GenerateFinalVideoWithOverlays to use concurrent overlay preparation
 func (ve *VideoEditor) GenerateFinalVideoWithOverlays() error {
 	slideshowPath := filepath.Join(ve.OutputDir, "slideshow.mp4")
 	voicePath := filepath.Join(ve.OutputDir, "merged_voice.mp3")
@@ -482,16 +584,13 @@ func (ve *VideoEditor) GenerateFinalVideoWithOverlays() error {
 	finalPath := filepath.Join(ve.OutputDir, "final_video.mp4")
 
 	log.Printf("Generating final video with overlays...")
-	log.Printf("Slideshow: %s", slideshowPath)
-	log.Printf("Voice: %s", voicePath)
-	log.Printf("BGM: %s", bgmPath)
-	log.Printf("Final output: %s", finalPath)
 
-	// Get overlay opacity from config (default 0.7 if not specified)
-	overlayOpacity := 0.3 // Default opacity
+	// Get overlay opacity from config
+	overlayOpacity := 0.3
 	if ve.Config.Settings.OverlayOpacity > 0 {
 		overlayOpacity = ve.Config.Settings.OverlayOpacity
 	}
+
 	// Verify required files exist
 	requiredFiles := map[string]string{
 		"slideshow": slideshowPath,
@@ -517,6 +616,22 @@ func (ve *VideoEditor) GenerateFinalVideoWithOverlays() error {
 		return fmt.Errorf("failed to get overlay videos: %v", err)
 	}
 
+	if len(overlayVideos) == 0 {
+		log.Printf("No overlay videos found, using simplified generation")
+		return ve.GenerateFinalVideoSimplified()
+	}
+
+	// CONCURRENT OVERLAY PREPARATION
+	preparedOverlays, err := ve.PrepareOverlayVideosConcurrently(overlayVideos, slideshowDuration)
+	if err != nil {
+		return fmt.Errorf("failed to prepare overlays concurrently: %v", err)
+	}
+
+	if len(preparedOverlays) == 0 {
+		log.Printf("No overlay videos could be prepared, using simplified generation")
+		return ve.GenerateFinalVideoSimplified()
+	}
+
 	// Convert paths for FFmpeg compatibility
 	slideshowForFFmpeg := strings.ReplaceAll(slideshowPath, "\\", "/")
 	voiceForFFmpeg := strings.ReplaceAll(voicePath, "\\", "/")
@@ -530,56 +645,28 @@ func (ve *VideoEditor) GenerateFinalVideoWithOverlays() error {
 		}
 	}
 
+	// Build FFmpeg command with overlays (rest of the method remains the same)
 	var args []string
 	var filterComplex string
 
-	if len(overlayVideos) == 0 {
-		// No overlays - use simplified version
-		log.Printf("No overlay videos found, using simplified generation")
-		return ve.GenerateFinalVideoSimplified()
-	}
-
-	// Prepare overlay videos
-	var preparedOverlays []string
-	for i, overlayPath := range overlayVideos {
-		// Use full slideshow duration for each overlay (they will be timed separately in the overlay filter)
-		preparedOverlay, err := ve.PrepareOverlayVideo(overlayPath, slideshowDuration, i)
-		if err != nil {
-			log.Printf("Warning: failed to prepare overlay %d: %v", i, err)
-			continue
-		}
-		preparedOverlays = append(preparedOverlays, preparedOverlay)
-	}
-
-	if len(preparedOverlays) == 0 {
-		log.Printf("No overlay videos could be prepared, using simplified generation")
-		return ve.GenerateFinalVideoSimplified()
-	}
-
-	// Build FFmpeg command with overlays
 	args = append(args, "-y")
-	args = append(args, "-i", slideshowForFFmpeg) // [0] - slideshow
+	args = append(args, "-i", slideshowForFFmpeg)
 
-	// Add prepared overlay inputs
 	for _, overlay := range preparedOverlays {
 		overlayForFFmpeg := strings.ReplaceAll(overlay, "\\", "/")
 		args = append(args, "-i", overlayForFFmpeg)
 	}
 
-	// Add audio inputs
-	args = append(args, "-i", voiceForFFmpeg) // voice
-	args = append(args, "-i", bgmForFFmpeg)   // bgm
+	args = append(args, "-i", voiceForFFmpeg)
+	args = append(args, "-i", bgmForFFmpeg)
 
-	// Build filter complex for overlays
 	// Build filter complex for overlays
 	baseVideo := "[0:v]"
 
 	if len(preparedOverlays) == 1 {
-		// Single overlay with proper alpha blending
 		filterComplex = fmt.Sprintf("%s[1:v]blend=all_mode=overlay:all_opacity=%.2f,format=yuv420p[final_video]",
 			baseVideo, overlayOpacity)
 	} else {
-		// Multiple overlays - apply them sequentially with proper blending
 		currentInput := baseVideo
 		for i := 0; i < len(preparedOverlays); i++ {
 			overlayIndex := i + 1
@@ -589,7 +676,6 @@ func (ve *VideoEditor) GenerateFinalVideoWithOverlays() error {
 				outputTag = "[final_video]"
 			}
 
-			// Calculate timing for each overlay (distribute evenly)
 			startTime := float64(i) * (slideshowDuration / float64(len(preparedOverlays)))
 			endTime := startTime + (slideshowDuration / float64(len(preparedOverlays)))
 
@@ -641,7 +727,7 @@ func (ve *VideoEditor) GenerateFinalVideoWithOverlays() error {
 		return fmt.Errorf("failed to generate final video with overlays: %v", err)
 	}
 
-	log.Printf("✓ Final video with overlays generated successfully")
+	log.Printf("✓ Final video with overlays generated successfully using concurrent processing")
 
 	// Clean up prepared overlay files
 	for _, overlay := range preparedOverlays {

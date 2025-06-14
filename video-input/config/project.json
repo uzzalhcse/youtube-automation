@@ -10,6 +10,6 @@
     "zoom_speed": 0.0008,
     "zoom_intensity": 1.15,
     "pan_speed": 0.0002,
-    "transition_smooth": 1.5
+    "transition_smooth": 2
   }
 }

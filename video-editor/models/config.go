@@ -50,11 +50,12 @@ type Settings struct {
 	OverlayOpacity float64 `json:"overlay_opacity"` // Opacity for overlay videos (0.0 to 1.0)
 
 	// Zoom Animation Settings
-	ZoomSpeed        float64 `json:"zoom_speed,omitempty"`        // Speed of zoom (0.0005 to 0.005, default 0.0015)
-	ZoomIntensity    float64 `json:"zoom_intensity,omitempty"`    // Maximum zoom level (1.1 to 2.0, default 1.3)
-	PanSpeed         float64 `json:"pan_speed,omitempty"`         // Speed of panning (0.0001 to 0.001, default 0.0003)
-	TransitionSmooth float64 `json:"transition_smooth,omitempty"` // Smoothness factor (0.5 to 2.0, default 1.0)
-	AnimationPreset  string  `json:"animation_preset,omitempty"`  // "gentle", "moderate", "dynamic", "custom"
+	ZoomSpeed         float64 `json:"zoom_speed,omitempty"`        // Speed of zoom (0.0005 to 0.005, default 0.0015)
+	ZoomIntensity     float64 `json:"zoom_intensity,omitempty"`    // Maximum zoom level (1.1 to 2.0, default 1.3)
+	PanSpeed          float64 `json:"pan_speed,omitempty"`         // Speed of panning (0.0001 to 0.001, default 0.0003)
+	TransitionSmooth  float64 `json:"transition_smooth,omitempty"` // Smoothness factor (0.5 to 2.0, default 1.0)
+	AnimationPreset   string  `json:"animation_preset,omitempty"`  // "gentle", "moderate", "dynamic", "custom"
+	MaxConcurrentJobs int     `json:"max_concurrent_jobs,omitempty"`
 }
 
 // Example project.json configuration:
