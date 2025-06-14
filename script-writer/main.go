@@ -65,7 +65,10 @@ func getUserInput() (*ScriptConfig, error) {
 	config := &ScriptConfig{
 		Topic:                topic,
 		GenerateVisuals:      generateVisuals,
-		OutputFilename:       fmt.Sprintf("wisderly_script_%s_%d.txt", sanitizeFilename(topic), time.Now().Unix()),
+		ChannelName:          channelName,
+		OutputFolder:         sanitizeFilename(topic),
+		OutputFilename:       fmt.Sprintf("script_%d.txt", time.Now().Unix()),
+		MetaTagFilename:      fmt.Sprintf("metatag_%d.txt", time.Now().Unix()),
 		SectionCount:         defaultSectionCount,
 		SleepBetweenSections: defaultSleepBetweenSections,
 	}
@@ -88,8 +91,8 @@ func sanitizeFilename(topic string) string {
 	}
 
 	// Limit length
-	if len(sanitized) > 30 {
-		sanitized = sanitized[:30]
+	if len(sanitized) > 80 {
+		sanitized = sanitized[:80]
 	}
 
 	return sanitized

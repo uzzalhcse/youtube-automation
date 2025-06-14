@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -9,23 +11,29 @@ import (
 // ScriptConfig holds configuration for script generation
 type ScriptConfig struct {
 	Topic                string
+	ChannelName          string // New field for channel name
 	GenerateVisuals      bool
-	OutputFilename       string
+	OutputFilename       string // This will be the script filename
+	MetaTagFilename      string // New field for meta tag filename
+	OutputFolder         string // New field for output folder path (video title)
 	SectionCount         int
 	SleepBetweenSections time.Duration
 }
 
 // ScriptSession represents the current state of script generation
 type ScriptSession struct {
-	Config        *ScriptConfig
-	Filename      string
-	CurrentStep   int
-	Outline       string
-	OutlinePoints []string
-	Hook          string
-	Introduction  string
-	Content       strings.Builder
-	Context       *ScriptContext // Enhanced context tracking
+	Config          *ScriptConfig
+	ScriptFilename  string // Path to script file
+	MetaTagFilename string // Path to meta tag file
+	OutputFolder    string // Full folder path
+	CurrentStep     int
+	Outline         string
+	OutlinePoints   []string
+	Hook            string
+	MetaTag         string
+	Introduction    string
+	Content         strings.Builder
+	Context         *ScriptContext // Enhanced context tracking
 }
 
 // ScriptContext maintains context across API calls to improve coherence
@@ -44,13 +52,43 @@ const (
 	visualImageMultiplier       = 5
 	defaultSleepBetweenSections = 1 * time.Second
 	maxRetries                  = 5
+	channelName                 = "Wisderly" // Default channel name
 )
+
+// NewScriptConfig creates a new script configuration with proper file paths
+func NewScriptConfig(topic, channelName, videoTitle string) *ScriptConfig {
+	// Sanitize video title for folder name
+	sanitizedVideoTitle := sanitizeFilename(videoTitle)
+
+	config := &ScriptConfig{
+		Topic:                topic,
+		ChannelName:          channelName,
+		GenerateVisuals:      true,
+		OutputFolder:         sanitizedVideoTitle, // Just the video title, not combined
+		OutputFilename:       "script.txt",
+		MetaTagFilename:      "metatag.txt",
+		SectionCount:         defaultSectionCount,
+		SleepBetweenSections: defaultSleepBetweenSections,
+	}
+
+	return config
+}
 
 // NewScriptSession creates a new script session
 func NewScriptSession(config *ScriptConfig) *ScriptSession {
+	// Create the full folder path: ChannelName/VideoTitle
+	fullFolderPath := filepath.Join("output-scripts", config.ChannelName, config.OutputFolder)
+
+	// Create output folder if it doesn't exist
+	if err := os.MkdirAll(fullFolderPath, 0755); err != nil {
+		fmt.Printf("Warning: Could not create output folder: %v\n", err)
+	}
+
 	return &ScriptSession{
-		Config:   config,
-		Filename: config.OutputFilename,
+		Config:          config,
+		ScriptFilename:  filepath.Join(fullFolderPath, config.OutputFilename),
+		MetaTagFilename: filepath.Join(fullFolderPath, config.MetaTagFilename),
+		OutputFolder:    fullFolderPath,
 		Context: &ScriptContext{
 			ToneAndStyle:   "calm, trustworthy, senior-friendly",
 			TargetAudience: "seniors aged 60+",
@@ -72,6 +110,8 @@ func (s *ScriptSession) UpdateContext(newContent, contentType string) {
 		s.extractHookIntroElements(newContent)
 	case "section":
 		s.updateSectionContext(newContent)
+	case "meta_tag":
+		s.extractMetaTagElements(newContent)
 	}
 
 	// Update content summary
@@ -106,6 +146,22 @@ func (s *ScriptSession) extractHookIntroElements(content string) {
 	}
 }
 
+func (s *ScriptSession) extractMetaTagElements(content string) {
+	// Extract key SEO themes from meta tag content
+	contentLower := strings.ToLower(content)
+
+	// Look for SEO-related keywords that might be useful for maintaining consistency
+	if strings.Contains(contentLower, "senior") || strings.Contains(contentLower, "elderly") {
+		s.Context.KeyThemes = append(s.Context.KeyThemes, "senior-focused")
+	}
+	if strings.Contains(contentLower, "health") {
+		s.Context.KeyThemes = append(s.Context.KeyThemes, "health-related")
+	}
+	if strings.Contains(contentLower, "longevity") || strings.Contains(contentLower, "life") {
+		s.Context.KeyThemes = append(s.Context.KeyThemes, "longevity-focused")
+	}
+}
+
 func (s *ScriptSession) updateSectionContext(content string) {
 	// Generate transition phrase for next section
 	lastSentences := s.getLastSentences(content, 2)
@@ -117,7 +173,9 @@ func (s *ScriptSession) updateSectionContext(content string) {
 func (s *ScriptSession) updateContentSummary() {
 	summary := fmt.Sprintf("Topic: %s. ", s.Config.Topic)
 	if len(s.Context.KeyThemes) > 0 {
-		summary += fmt.Sprintf("Key themes: %s. ", strings.Join(s.Context.KeyThemes, ", "))
+		// Remove duplicates from key themes
+		uniqueThemes := removeDuplicates(s.Context.KeyThemes)
+		summary += fmt.Sprintf("Key themes: %s. ", strings.Join(uniqueThemes, ", "))
 	}
 	if len(s.Context.MainObjectives) > 0 {
 		summary += fmt.Sprintf("Objectives: %s. ", strings.Join(s.Context.MainObjectives, ", "))
@@ -146,7 +204,8 @@ func (s *ScriptSession) GetContextPrompt() string {
 		s.Context.ContentSummary)
 
 	if len(s.Context.KeyThemes) > 0 {
-		contextPrompt += fmt.Sprintf("\n- Key Themes to Maintain: %s", strings.Join(s.Context.KeyThemes, ", "))
+		uniqueThemes := removeDuplicates(s.Context.KeyThemes)
+		contextPrompt += fmt.Sprintf("\n- Key Themes to Maintain: %s", strings.Join(uniqueThemes, ", "))
 	}
 
 	if s.Context.TransitionPhrase != "" {
@@ -167,6 +226,21 @@ func (s *ScriptSession) getContentTail(content string, maxLength int) string {
 		return content
 	}
 	return content[len(content)-maxLength:]
+}
+
+// Helper function to remove duplicates from string slice
+func removeDuplicates(slice []string) []string {
+	keys := make(map[string]bool)
+	result := []string{}
+
+	for _, item := range slice {
+		if !keys[item] {
+			keys[item] = true
+			result = append(result, item)
+		}
+	}
+
+	return result
 }
 
 // Gemini API types
