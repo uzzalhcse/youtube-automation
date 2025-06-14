@@ -7,12 +7,16 @@
     "bgm_volume": 0.3,
     "overlay_opacity": 0.3,
     "animation_preset": "gentle",
-    "zoom_speed": 0.0008,
+    "zoom_speed": 0.0002,
     "zoom_intensity": 1.15,
     "pan_speed": 0.0002,
     "transition_smooth": 2,
-    "use_gpu": true,
+    "use_gpu": false,
     "gpu_device": "0",
-    "max_concurrent_jobs": 2
+    "max_concurrent_jobs": 8,
+    "use_partial_image_duration": true,
+    "images_duration_minutes": 0.13,
+    "black_screen_color": "black",
+    "use_animation_effects": true
   }
 }

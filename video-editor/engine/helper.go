@@ -546,3 +546,194 @@ func (ve *VideoEditor) GetOverlayVideos() ([]string, error) {
 
 	return fullPaths, nil
 }
+
+// createStaticFilter creates a simple static filter without animation
+func (ve *VideoEditor) createStaticFilter(width, height int) string {
+	// Simple scale and pad filter for static images
+	return fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black",
+		width, height, width, height)
+}
+
+// concatenateClips concatenates all video clips into a single video
+func (ve *VideoEditor) concatenateClips(videoClips []string, outputPath string) error {
+	// Create a list file for concatenation
+	listFile := filepath.Join(ve.OutputDir, "clips_list.txt")
+	listContent := ""
+	for _, clip := range videoClips {
+		absPath, err := filepath.Abs(clip)
+		if err != nil {
+			absPath = clip
+		}
+		clipForFFmpeg := strings.ReplaceAll(absPath, "\\", "/")
+		listContent += fmt.Sprintf("file '%s'\n", clipForFFmpeg)
+	}
+
+	log.Printf("Creating clips list file: %s", listFile)
+	if err := os.WriteFile(listFile, []byte(listContent), 0644); err != nil {
+		return fmt.Errorf("failed to create clips list file: %v", err)
+	}
+
+	// Concatenate all clips
+	listFileForFFmpeg := strings.ReplaceAll(listFile, "\\", "/")
+	outputPathForFFmpeg := strings.ReplaceAll(outputPath, "\\", "/")
+
+	log.Printf("Concatenating %d clips...", len(videoClips))
+
+	concatArgs := []string{
+		"-y",
+		"-f", "concat",
+		"-safe", "0",
+		"-i", listFileForFFmpeg,
+		"-c", "copy",
+		outputPathForFFmpeg,
+	}
+
+	concatCmd := exec.Command("ffmpeg", concatArgs...)
+	concatOutput, err := concatCmd.CombinedOutput()
+	if err != nil {
+		log.Printf("FFmpeg concatenation output: %s", string(concatOutput))
+		return fmt.Errorf("failed to concatenate clips: %v", err)
+	}
+
+	// Clean up list file
+	if err := os.Remove(listFile); err != nil {
+		log.Printf("Warning: failed to clean up list file: %v", err)
+	}
+
+	return nil
+}
+
+// addBlackScreenToSlideshow adds black screen to the end of slideshow
+func (ve *VideoEditor) addBlackScreenToSlideshow(blackDuration float64) error {
+	slideshowPath := filepath.Join(ve.OutputDir, "slideshow.mp4")
+	tempSlideshowPath := filepath.Join(ve.OutputDir, "slideshow_temp.mp4")
+	blackScreenPath := filepath.Join(ve.OutputDir, "black_screen.mp4")
+
+	// Create black screen video
+	if err := ve.createBlackScreen(blackScreenPath, blackDuration); err != nil {
+		return fmt.Errorf("failed to create black screen: %v", err)
+	}
+
+	// Concatenate slideshow + black screen
+	if err := ve.concatenateWithBlackScreen(slideshowPath, blackScreenPath, tempSlideshowPath); err != nil {
+		return fmt.Errorf("failed to concatenate with black screen: %v", err)
+	}
+
+	// Replace original slideshow with the new one
+	if err := os.Rename(tempSlideshowPath, slideshowPath); err != nil {
+		return fmt.Errorf("failed to replace slideshow: %v", err)
+	}
+
+	// Clean up
+	os.Remove(blackScreenPath)
+
+	return nil
+}
+
+func (ve *VideoEditor) createBlackScreen(outputPath string, duration float64) error {
+	color := "black"
+	if ve.Config.Settings.BlackScreenColor != "" {
+		color = ve.Config.Settings.BlackScreenColor
+	}
+
+	encoder, encoderArgs := ve.getEncoderSettings()
+
+	args := []string{
+		"-y",
+		"-f", "lavfi",
+		"-i", fmt.Sprintf("color=%s:size=%dx%d:duration=%.2f:rate=%d",
+			color, ve.Config.Settings.Width, ve.Config.Settings.Height, duration, ve.Config.Settings.FPS),
+		"-c:v", encoder,
+	}
+
+	args = append(args, encoderArgs...)
+	args = append(args, "-pix_fmt", "yuv420p", outputPath)
+
+	log.Printf("Creating black screen: %.2f seconds (%.2f minutes)", duration, duration/60.0)
+
+	cmd := exec.Command("ffmpeg", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("FFmpeg black screen output: %s", string(output))
+		return fmt.Errorf("failed to create black screen: %v", err)
+	}
+
+	return nil
+}
+
+func (ve *VideoEditor) concatenateWithBlackScreen(slideshowPath, blackScreenPath, outputPath string) error {
+	// Ensure all paths are absolute to avoid directory issues
+	absSlideshow, err := filepath.Abs(slideshowPath)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path for slideshow: %v", err)
+	}
+
+	absBlackScreen, err := filepath.Abs(blackScreenPath)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path for black screen: %v", err)
+	}
+
+	absOutput, err := filepath.Abs(outputPath)
+	if err != nil {
+		return fmt.Errorf("failed to get absolute path for output: %v", err)
+	}
+
+	// Verify input files exist
+	if _, err := os.Stat(absSlideshow); os.IsNotExist(err) {
+		return fmt.Errorf("slideshow file does not exist: %s", absSlideshow)
+	}
+
+	if _, err := os.Stat(absBlackScreen); os.IsNotExist(err) {
+		return fmt.Errorf("black screen file does not exist: %s", absBlackScreen)
+	}
+
+	// Create output directory if it doesn't exist
+	outputDir := filepath.Dir(absOutput)
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return fmt.Errorf("failed to create output directory: %v", err)
+	}
+
+	// Create concat list file in a temp location to avoid path issues
+	tempDir := os.TempDir()
+	listFile := filepath.Join(tempDir, fmt.Sprintf("concat_list_%d.txt", time.Now().UnixNano()))
+
+	// Use forward slashes for FFmpeg compatibility (works on Windows too)
+	listContent := fmt.Sprintf("file '%s'\nfile '%s'\n",
+		strings.ReplaceAll(absSlideshow, "\\", "/"),
+		strings.ReplaceAll(absBlackScreen, "\\", "/"))
+
+	if err := os.WriteFile(listFile, []byte(listContent), 0644); err != nil {
+		return fmt.Errorf("failed to create concat list: %v", err)
+	}
+
+	// Cleanup temp file
+	defer os.Remove(listFile)
+
+	// Log the concat list content for debugging
+	log.Printf("Concat list content:\n%s", listContent)
+	log.Printf("Output path: %s", absOutput)
+
+	args := []string{
+		"-y",           // Overwrite output file
+		"-f", "concat", // Use concat format
+		"-safe", "0", // Allow unsafe file paths
+		"-i", strings.ReplaceAll(listFile, "\\", "/"), // Input concat list
+		"-c", "copy", // Copy streams without re-encoding
+		strings.ReplaceAll(absOutput, "\\", "/"), // Output file
+	}
+
+	cmd := exec.Command("ffmpeg", args...)
+
+	// Set working directory to avoid relative path issues
+	cmd.Dir = filepath.Dir(absOutput)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("FFmpeg command: ffmpeg %s", strings.Join(args, " "))
+		log.Printf("FFmpeg concatenation output: %s", string(output))
+		return fmt.Errorf("failed to concatenate: %v", err)
+	}
+
+	log.Printf("Successfully concatenated video to: %s", absOutput)
+	return nil
+}

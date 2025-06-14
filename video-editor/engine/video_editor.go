@@ -158,6 +158,30 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 
 	log.Printf("Found %d image files", len(imageFiles))
 	sort.Strings(imageFiles)
+
+	// Calculate image duration based on configuration
+	var imageDuration float64
+	var actualImagesDuration float64
+
+	if ve.Config.Settings.UsePartialImageDuration && ve.Config.Settings.ImagesDurationMinutes > 0 {
+		// Mode 2: Use specified duration for all images (convert minutes to seconds)
+		actualImagesDuration = ve.Config.Settings.ImagesDurationMinutes * 60.0
+		imageDuration = actualImagesDuration / float64(len(imageFiles))
+		log.Printf("Using partial image duration: %.2f minutes (%.2f seconds) for all images",
+			ve.Config.Settings.ImagesDurationMinutes, actualImagesDuration)
+	} else {
+		// Mode 1: Spread images across entire duration (current behavior)
+		actualImagesDuration = targetDuration
+		imageDuration = targetDuration / float64(len(imageFiles))
+		log.Printf("Using full video duration for images: %.2f seconds", actualImagesDuration)
+	}
+
+	log.Printf("Duration per image: %.2f seconds", imageDuration)
+
+	// Check animation settings
+	useAnimations := ve.Config.Settings.UseAnimationEffects
+	log.Printf("Animation effects: %s", map[bool]string{true: "ENABLED", false: "DISABLED"}[useAnimations])
+
 	encoder, encoderArgs := ve.getEncoderSettings()
 
 	// Log GPU/CPU usage
@@ -166,6 +190,7 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 	} else {
 		log.Printf("🖥️ Using CPU encoding with encoder: %s", encoder)
 	}
+
 	// Validate all image files exist
 	for i, file := range imageFiles {
 		var fullPath string
@@ -186,18 +211,14 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 		}
 	}
 
-	// Calculate duration per image based on target duration
-	imageDuration := targetDuration / float64(len(imageFiles))
-	log.Printf("Duration per image: %.2f seconds (total: %.2f seconds)", imageDuration, targetDuration)
-
 	// Ensure output directory exists
 	if err := os.MkdirAll(ve.OutputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %v", err)
 	}
 
-	// CONCURRENT PROCESSING: Create individual video clips with zoom animations
+	// CONCURRENT PROCESSING: Create individual video clips
 	var videoClips []string
-	videoClips = make([]string, len(imageFiles)) // Pre-allocate slice
+	videoClips = make([]string, len(imageFiles))
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -219,21 +240,31 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 			imgPathForFFmpeg := strings.ReplaceAll(imgPath, "\\", "/")
 			clipPathForFFmpeg := strings.ReplaceAll(clipPath, "\\", "/")
 
-			// Generate zoom configuration and filter
-			zoomConfig := ve.generateZoomConfig(index)
-			zoomFilter := ve.createZoomFilter(zoomConfig, imageDuration, ve.Config.Settings.Width, ve.Config.Settings.Height)
+			var videoFilter string
+			var effectName string
 
-			log.Printf("Creating clip %d with %s animation (%s)...", index+1, ve.getEffectName(zoomConfig.Effect),
+			if useAnimations {
+				// Generate zoom configuration and filter
+				zoomConfig := ve.generateZoomConfig(index)
+				videoFilter = ve.createZoomFilter(zoomConfig, imageDuration, ve.Config.Settings.Width, ve.Config.Settings.Height)
+				effectName = ve.getEffectName(zoomConfig.Effect)
+			} else {
+				// Simple static filter without animation
+				videoFilter = ve.createStaticFilter(ve.Config.Settings.Width, ve.Config.Settings.Height)
+				effectName = "static"
+			}
+
+			log.Printf("Creating clip %d with %s effect (%s)...", index+1, effectName,
 				map[bool]string{true: "GPU", false: "CPU"}[ve.UseGPU])
 
-			// NEW: Build args with GPU/CPU encoder
+			// Build args with GPU/CPU encoder
 			args := []string{
 				"-y",
 				"-loop", "1",
 				"-i", imgPathForFFmpeg,
-				"-vf", zoomFilter,
+				"-vf", videoFilter,
 				"-t", fmt.Sprintf("%.2f", imageDuration),
-				"-c:v", encoder, // Use selected encoder
+				"-c:v", encoder,
 			}
 
 			// Add encoder-specific arguments
@@ -248,7 +279,7 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 
 			// Adjust thread count based on GPU/CPU
 			if !ve.UseGPU {
-				args = append(args, "-threads", "1") // Limit threads for CPU
+				args = append(args, "-threads", "1")
 			}
 
 			args = append(args, clipPathForFFmpeg)
@@ -285,7 +316,7 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 		}
 	}
 
-	// Remove any empty entries (shouldn't happen, but safety check)
+	// Remove any empty entries
 	var validClips []string
 	for _, clip := range videoClips {
 		if clip != "" {
@@ -294,55 +325,30 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 	}
 	videoClips = validClips
 
-	// Create a list file for concatenation (rest remains the same)
-	listFile := filepath.Join(ve.OutputDir, "clips_list.txt")
-	listContent := ""
-	for _, clip := range videoClips {
-		absPath, err := filepath.Abs(clip)
-		if err != nil {
-			absPath = clip
-		}
-		clipForFFmpeg := strings.ReplaceAll(absPath, "\\", "/")
-		listContent += fmt.Sprintf("file '%s'\n", clipForFFmpeg)
-	}
-
-	log.Printf("Creating clips list file: %s", listFile)
-	if err := os.WriteFile(listFile, []byte(listContent), 0644); err != nil {
-		return fmt.Errorf("failed to create clips list file: %v", err)
-	}
-
 	// Concatenate all clips
-	listFileForFFmpeg := strings.ReplaceAll(listFile, "\\", "/")
-	outputPathForFFmpeg := strings.ReplaceAll(outputPath, "\\", "/")
-
-	log.Printf("Concatenating %d animated clips...", len(videoClips))
-
-	concatArgs := []string{
-		"-y",
-		"-f", "concat",
-		"-safe", "0",
-		"-i", listFileForFFmpeg,
-		"-c", "copy",
-		outputPathForFFmpeg,
-	}
-
-	concatCmd := exec.Command("ffmpeg", concatArgs...)
-	concatOutput, err := concatCmd.CombinedOutput()
-	if err != nil {
-		log.Printf("FFmpeg concatenation output: %s", string(concatOutput))
+	if err := ve.concatenateClips(videoClips, outputPath); err != nil {
 		return fmt.Errorf("failed to concatenate clips: %v", err)
 	}
 
-	log.Printf("✓ Animated slideshow created successfully using concurrent processing")
+	// If using partial duration, add black screen for remaining time
+	if ve.Config.Settings.UsePartialImageDuration && actualImagesDuration < targetDuration {
+		blackScreenDuration := targetDuration - actualImagesDuration
+		log.Printf("Adding black screen for remaining %.2f seconds (%.2f minutes)",
+			blackScreenDuration, blackScreenDuration/60.0)
+
+		if err := ve.addBlackScreenToSlideshow(blackScreenDuration); err != nil {
+			return fmt.Errorf("failed to add black screen: %v", err)
+		}
+	}
+
+	log.Printf("✓ Slideshow created successfully with %s effects",
+		map[bool]string{true: "animated", false: "static"}[useAnimations])
 
 	// Clean up temporary files
 	for _, clip := range videoClips {
 		if err := os.Remove(clip); err != nil {
 			log.Printf("Warning: failed to clean up clip %s: %v", clip, err)
 		}
-	}
-	if err := os.Remove(listFile); err != nil {
-		log.Printf("Warning: failed to clean up list file: %v", err)
 	}
 
 	// Verify output file exists
@@ -352,7 +358,8 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 
 	// Check actual duration
 	if actualDuration, err := ve.getVideoDuration(outputPath); err == nil {
-		log.Printf("Actual slideshow duration: %.2f seconds", actualDuration)
+		log.Printf("Actual slideshow duration: %.2f seconds (%.2f minutes)",
+			actualDuration, actualDuration/60.0)
 	}
 
 	return nil
