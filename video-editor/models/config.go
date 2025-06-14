@@ -40,13 +40,21 @@ type VideoConfig struct {
 }
 
 // Settings contains global video settings
+// Settings contains global video settings
 type Settings struct {
 	Width          int     `json:"width,omitempty"`
 	Height         int     `json:"height,omitempty"`
 	FPS            int     `json:"fps,omitempty"`
 	BGMVolume      float64 `json:"bgm_volume,omitempty"`
 	VoiceVolume    float64 `json:"voice_volume,omitempty"`
-	OverlayOpacity float64 `json:"overlay_opacity"` // NEW: Opacity for overlay videos (0.0 to 1.0)
+	OverlayOpacity float64 `json:"overlay_opacity"` // Opacity for overlay videos (0.0 to 1.0)
+
+	// Zoom Animation Settings
+	ZoomSpeed        float64 `json:"zoom_speed,omitempty"`        // Speed of zoom (0.0005 to 0.005, default 0.0015)
+	ZoomIntensity    float64 `json:"zoom_intensity,omitempty"`    // Maximum zoom level (1.1 to 2.0, default 1.3)
+	PanSpeed         float64 `json:"pan_speed,omitempty"`         // Speed of panning (0.0001 to 0.001, default 0.0003)
+	TransitionSmooth float64 `json:"transition_smooth,omitempty"` // Smoothness factor (0.5 to 2.0, default 1.0)
+	AnimationPreset  string  `json:"animation_preset,omitempty"`  // "gentle", "moderate", "dynamic", "custom"
 }
 
 // Example project.json configuration:
@@ -62,6 +70,7 @@ type Settings struct {
   }
 }
 */
+// LoadConfig loads the project configuration from a JSON file
 // LoadConfig loads the project configuration from a JSON file
 func LoadConfig(configPath string) (*VideoConfig, error) {
 	file, err := os.Open(configPath)
@@ -93,6 +102,13 @@ func LoadConfig(configPath string) (*VideoConfig, error) {
 		config.Settings.VoiceVolume = 1.0
 	}
 
+	// Set zoom animation defaults based on preset or individual settings
+	if config.Settings.AnimationPreset == "" {
+		config.Settings.AnimationPreset = "gentle"
+	}
+
+	config.applyAnimationPreset()
+
 	// Set default font properties for texts
 	for i := range config.Texts {
 		if config.Texts[i].FontSize <= 0 {
@@ -104,6 +120,64 @@ func LoadConfig(configPath string) (*VideoConfig, error) {
 	}
 
 	return &config, nil
+}
+
+// applyAnimationPreset applies predefined animation settings
+func (c *VideoConfig) applyAnimationPreset() {
+	switch c.Settings.AnimationPreset {
+	case "gentle":
+		if c.Settings.ZoomSpeed <= 0 {
+			c.Settings.ZoomSpeed = 0.0008
+		}
+		if c.Settings.ZoomIntensity <= 0 {
+			c.Settings.ZoomIntensity = 1.15
+		}
+		if c.Settings.PanSpeed <= 0 {
+			c.Settings.PanSpeed = 0.0002
+		}
+		if c.Settings.TransitionSmooth <= 0 {
+			c.Settings.TransitionSmooth = 1.5
+		}
+	case "moderate":
+		if c.Settings.ZoomSpeed <= 0 {
+			c.Settings.ZoomSpeed = 0.0015
+		}
+		if c.Settings.ZoomIntensity <= 0 {
+			c.Settings.ZoomIntensity = 1.25
+		}
+		if c.Settings.PanSpeed <= 0 {
+			c.Settings.PanSpeed = 0.0003
+		}
+		if c.Settings.TransitionSmooth <= 0 {
+			c.Settings.TransitionSmooth = 1.0
+		}
+	case "dynamic":
+		if c.Settings.ZoomSpeed <= 0 {
+			c.Settings.ZoomSpeed = 0.0025
+		}
+		if c.Settings.ZoomIntensity <= 0 {
+			c.Settings.ZoomIntensity = 1.4
+		}
+		if c.Settings.PanSpeed <= 0 {
+			c.Settings.PanSpeed = 0.0005
+		}
+		if c.Settings.TransitionSmooth <= 0 {
+			c.Settings.TransitionSmooth = 0.8
+		}
+	default: // custom or fallback
+		if c.Settings.ZoomSpeed <= 0 {
+			c.Settings.ZoomSpeed = 0.0008
+		}
+		if c.Settings.ZoomIntensity <= 0 {
+			c.Settings.ZoomIntensity = 1.15
+		}
+		if c.Settings.PanSpeed <= 0 {
+			c.Settings.PanSpeed = 0.0002
+		}
+		if c.Settings.TransitionSmooth <= 0 {
+			c.Settings.TransitionSmooth = 1.5
+		}
+	}
 }
 
 // GetImageDuration calculates the duration each image should be displayed

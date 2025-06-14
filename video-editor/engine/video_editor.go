@@ -3,15 +3,38 @@ package engine
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"youtube_automation/video-editor/models"
 	"youtube_automation/video-editor/utils"
 )
+
+// ZoomEffect represents different zoom animation types
+type ZoomEffect int
+
+const (
+	ZoomIn ZoomEffect = iota
+	ZoomOut
+	ZoomInOut
+	PanZoom
+)
+
+// ZoomConfig holds configuration for zoom animations
+type ZoomConfig struct {
+	Effect     ZoomEffect
+	StartScale float64 // Starting zoom scale (1.0 = normal)
+	EndScale   float64 // Ending zoom scale
+	StartX     float64 // Starting X position (0.5 = center)
+	StartY     float64 // Starting Y position (0.5 = center)
+	EndX       float64 // Ending X position
+	EndY       float64 // Ending Y position
+}
 
 // VideoEditor handles all video editing operations
 type VideoEditor struct {
@@ -29,7 +52,128 @@ func NewVideoEditor(inputDir, outputDir string, config *models.VideoConfig) *Vid
 	}
 }
 
-// CreateSlideshow generates a slideshow from images with proper duration calculation
+// generateZoomConfig creates a configurable zoom configuration
+func (ve *VideoEditor) generateZoomConfig(index int) ZoomConfig {
+	rand.Seed(time.Now().UnixNano() + int64(index))
+
+	effects := []ZoomEffect{ZoomIn, ZoomOut, ZoomInOut, PanZoom}
+	effect := effects[rand.Intn(len(effects))]
+
+	config := ZoomConfig{
+		Effect: effect,
+		StartX: 0.5,
+		StartY: 0.5,
+		EndX:   0.5,
+		EndY:   0.5,
+	}
+
+	// Use configurable zoom intensity
+	baseZoom := ve.Config.Settings.ZoomIntensity
+	zoomVariation := 0.1 * ve.Config.Settings.TransitionSmooth
+
+	switch effect {
+	case ZoomIn:
+		config.StartScale = 1.0
+		config.EndScale = baseZoom + rand.Float64()*zoomVariation
+
+	case ZoomOut:
+		config.StartScale = baseZoom + rand.Float64()*zoomVariation
+		config.EndScale = 1.0
+
+	case ZoomInOut:
+		config.StartScale = 1.0
+		config.EndScale = 1.0
+		// Peak zoom will be handled in the filter
+
+	case PanZoom:
+		config.StartScale = baseZoom * 0.9
+		config.EndScale = baseZoom * 1.1
+
+		// More controlled panning with configurable speed
+		panRange := 0.2 * ve.Config.Settings.TransitionSmooth
+		centerOffset := (1.0 - panRange) / 2
+
+		config.StartX = centerOffset + rand.Float64()*panRange
+		config.StartY = centerOffset + rand.Float64()*panRange
+		config.EndX = centerOffset + rand.Float64()*panRange
+		config.EndY = centerOffset + rand.Float64()*panRange
+	}
+
+	return config
+}
+
+// createZoomFilter creates FFmpeg filter with configurable smooth animations
+func (ve *VideoEditor) createZoomFilter(config ZoomConfig, duration float64, width, height int) string {
+	// Calculate frames for smooth animation
+	totalFrames := int(duration * float64(ve.Config.Settings.FPS))
+
+	// Scale input resolution for better quality
+	inputScale := 2.0
+	scaledWidth := int(float64(width) * inputScale)
+	scaledHeight := int(float64(height) * inputScale)
+
+	switch config.Effect {
+	case ZoomIn:
+		// Smooth zoom in with configurable speed
+		zoomIncrement := ve.Config.Settings.ZoomSpeed * ve.Config.Settings.TransitionSmooth
+		return fmt.Sprintf("scale=%d:%d,zoompan=z='min(1+%.6f*frame,%.3f)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
+			scaledWidth, scaledHeight,
+			zoomIncrement,
+			config.EndScale,
+			totalFrames,
+			width, height)
+
+	case ZoomOut:
+		// Smooth zoom out with configurable speed
+		zoomDecrement := ve.Config.Settings.ZoomSpeed * ve.Config.Settings.TransitionSmooth
+		return fmt.Sprintf("scale=%d:%d,zoompan=z='max(%.3f-%.6f*frame,1.0)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
+			scaledWidth, scaledHeight,
+			config.StartScale,
+			zoomDecrement,
+			totalFrames,
+			width, height)
+
+	case ZoomInOut:
+		// Smooth zoom in-out with configurable intensity
+		peakZoom := ve.Config.Settings.ZoomIntensity
+		halfFrames := totalFrames / 2
+		smoothFactor := ve.Config.Settings.TransitionSmooth
+
+		return fmt.Sprintf("scale=%d:%d,zoompan=z='if(lte(frame,%d),1+%.6f*pow(frame/%d,%.2f),%.3f-%.6f*pow((frame-%d)/%d,%.2f))':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
+			scaledWidth, scaledHeight,
+			halfFrames,
+			(peakZoom - 1.0), halfFrames, smoothFactor,
+			peakZoom, (peakZoom - 1.0), halfFrames, halfFrames, smoothFactor,
+			totalFrames,
+			width, height)
+
+	case PanZoom:
+		// Smooth pan and zoom with configurable speeds
+		zoomRange := config.EndScale - config.StartScale
+		panXRange := config.EndX - config.StartX
+		panYRange := config.EndY - config.StartY
+
+		smoothFactor := ve.Config.Settings.TransitionSmooth
+
+		return fmt.Sprintf("scale=%d:%d,zoompan=z='%.3f+%.6f*pow(frame/%d,%.2f)':x='(%.3f+%.6f*pow(frame/%d,%.2f))*iw-(iw/zoom/2)':y='(%.3f+%.6f*pow(frame/%d,%.2f))*ih-(ih/zoom/2)':d=%d:s=%dx%d",
+			scaledWidth, scaledHeight,
+			config.StartScale, zoomRange, totalFrames, smoothFactor,
+			config.StartX, panXRange, totalFrames, smoothFactor,
+			config.StartY, panYRange, totalFrames, smoothFactor,
+			totalFrames,
+			width, height)
+	}
+
+	// Fallback to gentle zoom in
+	return fmt.Sprintf("scale=%d:%d,zoompan=z='min(1+%.6f*frame,%.3f)':d=%d:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=%dx%d",
+		scaledWidth, scaledHeight,
+		ve.Config.Settings.ZoomSpeed,
+		ve.Config.Settings.ZoomIntensity,
+		totalFrames,
+		width, height)
+}
+
+// CreateSlideshow generates a slideshow from images with zoom animations
 func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 	imagesDir := filepath.Join(ve.InputDir, "images")
 	outputPath := filepath.Join(ve.OutputDir, "slideshow.mp4")
@@ -82,55 +226,108 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 	// Convert paths for FFmpeg compatibility
 	outputPathForFFmpeg := strings.ReplaceAll(outputPath, "\\", "/")
 
-	// Build FFmpeg command for slideshow - simplified approach
-	var args []string
-	args = append(args, "-y")
+	// Ensure output directory exists
+	if err := os.MkdirAll(ve.OutputDir, 0755); err != nil {
+		return fmt.Errorf("failed to create output directory: %v", err)
+	}
 
-	// Add input images with proper duration
-	for _, img := range imageFiles {
+	// Create individual video clips with zoom animations
+	var videoClips []string
+	for i, img := range imageFiles {
 		imgPath := strings.ReplaceAll(img, "\\", "/")
-		args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.2f", imageDuration), "-i", imgPath)
+		clipPath := filepath.Join(ve.OutputDir, fmt.Sprintf("clip_%d.mp4", i))
+		clipPathForFFmpeg := strings.ReplaceAll(clipPath, "\\", "/")
+
+		// Generate zoom configuration for this image
+		zoomConfig := ve.generateZoomConfig(i)
+		zoomFilter := ve.createZoomFilter(zoomConfig, imageDuration, ve.Config.Settings.Width, ve.Config.Settings.Height)
+
+		log.Printf("Creating clip %d with %s animation...", i+1, ve.getEffectName(zoomConfig.Effect))
+		log.Printf("Clip path: %s", clipPath)
+
+		// Add smooth transitions and higher quality settings
+		args := []string{
+			"-y",
+			"-loop", "1",
+			"-i", imgPath,
+			"-vf", zoomFilter,
+			"-t", fmt.Sprintf("%.2f", imageDuration),
+			"-c:v", "libx264",
+			"-preset", "slow", // Higher quality preset
+			"-crf", "18", // High quality constant rate factor
+			"-r", strconv.Itoa(ve.Config.Settings.FPS),
+			"-pix_fmt", "yuv420p",
+			"-avoid_negative_ts", "make_zero",
+			clipPathForFFmpeg,
+		}
+
+		cmd := exec.Command("ffmpeg", args...)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			log.Printf("FFmpeg clip creation output: %s", string(output))
+			return fmt.Errorf("failed to create clip %d: %v", i, err)
+		}
+
+		// Verify clip was created
+		if _, err := os.Stat(clipPath); os.IsNotExist(err) {
+			return fmt.Errorf("clip file was not created: %s", clipPath)
+		}
+
+		videoClips = append(videoClips, clipPath)
 	}
 
-	// Simple concatenation without complex transitions
-	var filterInputs []string
-	for i := 0; i < len(imageFiles); i++ {
-		filterInputs = append(filterInputs, fmt.Sprintf("[%d:v]scale=%d:%d,setsar=1[v%d]",
-			i, ve.Config.Settings.Width, ve.Config.Settings.Height, i))
+	// Create a list file for concatenation
+	listFile := filepath.Join(ve.OutputDir, "clips_list.txt")
+	listContent := ""
+	for _, clip := range videoClips {
+		// Use absolute paths in the list file
+		absPath, err := filepath.Abs(clip)
+		if err != nil {
+			absPath = clip
+		}
+		clipForFFmpeg := strings.ReplaceAll(absPath, "\\", "/")
+		listContent += fmt.Sprintf("file '%s'\n", clipForFFmpeg)
 	}
 
-	// Concatenate all scaled inputs
-	var concatInputs []string
-	for i := 0; i < len(imageFiles); i++ {
-		concatInputs = append(concatInputs, fmt.Sprintf("[v%d]", i))
+	log.Printf("Creating clips list file: %s", listFile)
+	log.Printf("List content:\n%s", listContent)
+
+	if err := os.WriteFile(listFile, []byte(listContent), 0644); err != nil {
+		return fmt.Errorf("failed to create clips list file: %v", err)
 	}
 
-	filterComplex := strings.Join(filterInputs, ";") + ";" +
-		strings.Join(concatInputs, "") + fmt.Sprintf("concat=n=%d:v=1:a=0[slideshow]", len(imageFiles))
+	// Concatenate all clips with smooth transitions
+	listFileForFFmpeg := strings.ReplaceAll(listFile, "\\", "/")
 
-	args = append(args, "-filter_complex", filterComplex)
+	log.Printf("Concatenating %d animated clips...", len(videoClips))
 
-	// Output settings
-	args = append(args,
-		"-map", "[slideshow]",
-		"-c:v", "libx264",
-		"-r", strconv.Itoa(ve.Config.Settings.FPS),
-		"-pix_fmt", "yuv420p",
-		"-preset", "fast", // Use faster preset
-		outputPathForFFmpeg)
+	concatArgs := []string{
+		"-y",
+		"-f", "concat",
+		"-safe", "0",
+		"-i", listFileForFFmpeg,
+		"-c", "copy", // Copy streams for faster processing
+		outputPathForFFmpeg,
+	}
 
-	log.Printf("Creating slideshow with %d images (%.2f seconds each)...", len(imageFiles), imageDuration)
-
-	cmd := exec.Command("ffmpeg", args...)
-
-	// Use simpler output capture
-	output, err := cmd.CombinedOutput()
+	concatCmd := exec.Command("ffmpeg", concatArgs...)
+	concatOutput, err := concatCmd.CombinedOutput()
 	if err != nil {
-		log.Printf("FFmpeg slideshow output: %s", string(output))
-		return fmt.Errorf("failed to create slideshow: %v", err)
+		log.Printf("FFmpeg concatenation output: %s", string(concatOutput))
+		return fmt.Errorf("failed to concatenate clips: %v", err)
 	}
 
-	log.Printf("✓ Slideshow created successfully")
+	log.Printf("✓ Animated slideshow created successfully")
+
+	// Clean up temporary files
+	for _, clip := range videoClips {
+		if err := os.Remove(clip); err != nil {
+			log.Printf("Warning: failed to clean up clip %s: %v", clip, err)
+		}
+	}
+	if err := os.Remove(listFile); err != nil {
+		log.Printf("Warning: failed to clean up list file: %v", err)
+	}
 
 	// Verify output file exists and get its duration
 	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
@@ -143,6 +340,22 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 	}
 
 	return nil
+}
+
+// getEffectName returns human-readable effect name
+func (ve *VideoEditor) getEffectName(effect ZoomEffect) string {
+	switch effect {
+	case ZoomIn:
+		return "zoom in"
+	case ZoomOut:
+		return "zoom out"
+	case ZoomInOut:
+		return "zoom in-out"
+	case PanZoom:
+		return "pan & zoom"
+	default:
+		return "zoom"
+	}
 }
 
 // GetOverlayVideos finds and returns all overlay video files
@@ -535,7 +748,7 @@ func (ve *VideoEditor) GenerateFinalVideoSimplified() error {
 
 // ProcessVideo is the main method to process the entire video
 func (ve *VideoEditor) ProcessVideo() error {
-	log.Printf("🎬 Starting video processing...")
+	log.Printf("🎬 Starting video processing with zoom animations...")
 	log.Printf("Input directory: %s", ve.InputDir)
 	log.Printf("Output directory: %s", ve.OutputDir)
 
@@ -554,19 +767,19 @@ func (ve *VideoEditor) ProcessVideo() error {
 	}
 	log.Printf("✅ Background music extended")
 
-	// Step 3: Create slideshow with the same duration as voice
-	log.Printf("🖼️ Step 3: Creating slideshow...")
+	// Step 3: Create animated slideshow with zoom effects
+	log.Printf("🖼️ Step 3: Creating animated slideshow with zoom effects...")
 	if err := ve.CreateSlideshow(voiceDuration); err != nil {
 		return fmt.Errorf("failed to create slideshow: %v", err)
 	}
-	log.Printf("✅ Slideshow created")
+	log.Printf("✅ Animated slideshow created")
 
 	// Step 4: Generate final video with overlays
 	log.Printf("🎬 Step 4: Generating final video with overlays...")
 	if err := ve.GenerateFinalVideoWithOverlays(); err != nil {
 		return fmt.Errorf("failed to generate final video: %v", err)
 	}
-	log.Printf("✅ Final video generated successfully!")
+	log.Printf("✅ Final video with zoom animations generated successfully!")
 
 	return nil
 }

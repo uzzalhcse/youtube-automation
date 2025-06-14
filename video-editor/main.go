@@ -53,42 +53,43 @@ func main() {
 		fmt.Println("📹 No overlay videos found in ./video-input/overlays/")
 	}
 
+	editor.ProcessVideo()
 	// Step 1: Merge voice files
-	fmt.Println("🎙️ Step 1: Merging voice files...")
-	voiceDuration, err := editor.MergeVoiceFiles()
-	if err != nil {
-		log.Fatalf("Failed to merge voice files: %v", err)
-	}
-	fmt.Printf("✅ Voice files merged. Total duration: %.2f seconds\n", voiceDuration)
-
-	// Step 2: Extend background music
-	fmt.Println("🔊 Step 2: Extending background music...")
-	if err := editor.ExtendBackgroundMusic(voiceDuration); err != nil {
-		log.Fatalf("Failed to extend background music: %v", err)
-	}
-	fmt.Println("✅ Background music extended")
-
-	// Step 3: Create slideshow
-	fmt.Println("🖼️ Step 3: Creating slideshow...")
-	if err := editor.CreateSlideshow(voiceDuration); err != nil {
-		log.Fatalf("Failed to create slideshow: %v", err)
-	}
-	fmt.Println("✅ Slideshow created")
-
-	// Step 4: Generate final video with overlays and effects
-	if len(overlayVideos) > 0 {
-		fmt.Println("🎛️ Step 4: Applying overlays and generating final video...")
-		if err := editor.GenerateFinalVideoWithOverlays(); err != nil {
-			log.Fatalf("Failed to generate final video with overlays: %v", err)
-		}
-		fmt.Printf("✅ Final video generated with %d overlays\n", len(overlayVideos))
-	} else {
-		fmt.Println("🎛️ Step 4: Generating final video (no overlays)...")
-		if err := editor.GenerateFinalVideoSimplified(); err != nil {
-			log.Fatalf("Failed to generate final video: %v", err)
-		}
-		fmt.Println("✅ Final video generated")
-	}
+	//fmt.Println("🎙️ Step 1: Merging voice files...")
+	//voiceDuration, err := editor.MergeVoiceFiles()
+	//if err != nil {
+	//	log.Fatalf("Failed to merge voice files: %v", err)
+	//}
+	//fmt.Printf("✅ Voice files merged. Total duration: %.2f seconds\n", voiceDuration)
+	//
+	//// Step 2: Extend background music
+	//fmt.Println("🔊 Step 2: Extending background music...")
+	//if err := editor.ExtendBackgroundMusic(voiceDuration); err != nil {
+	//	log.Fatalf("Failed to extend background music: %v", err)
+	//}
+	//fmt.Println("✅ Background music extended")
+	//
+	//// Step 3: Create slideshow
+	//fmt.Println("🖼️ Step 3: Creating slideshow...")
+	//if err := editor.CreateSlideshow(voiceDuration); err != nil {
+	//	log.Fatalf("Failed to create slideshow: %v", err)
+	//}
+	//fmt.Println("✅ Slideshow created")
+	//
+	//// Step 4: Generate final video with overlays and effects
+	//if len(overlayVideos) > 0 {
+	//	fmt.Println("🎛️ Step 4: Applying overlays and generating final video...")
+	//	if err := editor.GenerateFinalVideoWithOverlays(); err != nil {
+	//		log.Fatalf("Failed to generate final video with overlays: %v", err)
+	//	}
+	//	fmt.Printf("✅ Final video generated with %d overlays\n", len(overlayVideos))
+	//} else {
+	//	fmt.Println("🎛️ Step 4: Generating final video (no overlays)...")
+	//	if err := editor.GenerateFinalVideoSimplified(); err != nil {
+	//		log.Fatalf("Failed to generate final video: %v", err)
+	//	}
+	//	fmt.Println("✅ Final video generated")
+	//}
 
 	fmt.Println("🎉 Video editing completed successfully!")
 	fmt.Printf("📁 Output files saved to: %s\n", OutputDir)
