@@ -41,13 +41,27 @@ type VideoConfig struct {
 
 // Settings contains global video settings
 type Settings struct {
-	Width       int     `json:"width,omitempty"`
-	Height      int     `json:"height,omitempty"`
-	FPS         int     `json:"fps,omitempty"`
-	BGMVolume   float64 `json:"bgm_volume,omitempty"`
-	VoiceVolume float64 `json:"voice_volume,omitempty"`
+	Width          int     `json:"width,omitempty"`
+	Height         int     `json:"height,omitempty"`
+	FPS            int     `json:"fps,omitempty"`
+	BGMVolume      float64 `json:"bgm_volume,omitempty"`
+	VoiceVolume    float64 `json:"voice_volume,omitempty"`
+	OverlayOpacity float64 `json:"overlay_opacity"` // NEW: Opacity for overlay videos (0.0 to 1.0)
 }
 
+// Example project.json configuration:
+/*
+{
+  "settings": {
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "voice_volume": 1.0,
+    "bgm_volume": 0.3,
+    "overlay_opacity": 0.5
+  }
+}
+*/
 // LoadConfig loads the project configuration from a JSON file
 func LoadConfig(configPath string) (*VideoConfig, error) {
 	file, err := os.Open(configPath)

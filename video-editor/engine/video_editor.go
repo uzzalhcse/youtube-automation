@@ -29,208 +29,6 @@ func NewVideoEditor(inputDir, outputDir string, config *models.VideoConfig) *Vid
 	}
 }
 
-// MergeVoiceFiles concatenates all voice files and returns the total duration
-func (ve *VideoEditor) MergeVoiceFiles() (float64, error) {
-	audioDir := filepath.Join(ve.InputDir, "audio")
-	outputPath := filepath.Join(ve.OutputDir, "merged_voice.mp3")
-
-	log.Printf("Audio directory: %s", audioDir)
-	log.Printf("Output path: %s", outputPath)
-
-	// Ensure output directory exists
-	if err := os.MkdirAll(ve.OutputDir, 0755); err != nil {
-		return 0, fmt.Errorf("failed to create output directory: %v", err)
-	}
-
-	// Get all voice files
-	voiceFiles, err := utils.GetVoiceFiles(audioDir)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get voice files: %v", err)
-	}
-
-	if len(voiceFiles) == 0 {
-		return 0, fmt.Errorf("no voice files found in %s", audioDir)
-	}
-
-	log.Printf("Found %d voice files", len(voiceFiles))
-
-	// Sort voice files to ensure proper order
-	sort.Strings(voiceFiles)
-
-	// Validate all voice files exist and are readable
-	for i, file := range voiceFiles {
-		var fullPath string
-		if filepath.IsAbs(file) {
-			fullPath = file
-		} else {
-			if _, err := os.Stat(file); err == nil {
-				fullPath = file
-			} else {
-				fullPath = filepath.Join(audioDir, file)
-			}
-		}
-
-		voiceFiles[i] = fullPath
-
-		if _, err := os.Stat(voiceFiles[i]); os.IsNotExist(err) {
-			return 0, fmt.Errorf("voice file does not exist: %s", voiceFiles[i])
-		}
-
-		log.Printf("Voice file %d: %s", i+1, voiceFiles[i])
-	}
-
-	// Create temporary concat file list
-	concatFile := filepath.Join(ve.OutputDir, "voice_list.txt")
-	if err := ve.createConcatFile(voiceFiles, concatFile); err != nil {
-		return 0, fmt.Errorf("failed to create concat file: %v", err)
-	}
-	defer func() {
-		if err := os.Remove(concatFile); err != nil {
-			log.Printf("Warning: failed to remove concat file: %v", err)
-		}
-	}()
-
-	// Log the concat file contents for debugging
-	if content, err := os.ReadFile(concatFile); err == nil {
-		log.Printf("Concat file contents:\n%s", string(content))
-	}
-
-	// Remove existing output file if it exists
-	if _, err := os.Stat(outputPath); err == nil {
-		if err := os.Remove(outputPath); err != nil {
-			log.Printf("Warning: failed to remove existing output file: %v", err)
-		}
-	}
-
-	// Convert paths to forward slashes for FFmpeg (Windows compatibility)
-	concatFileForFFmpeg := strings.ReplaceAll(concatFile, "\\", "/")
-	outputPathForFFmpeg := strings.ReplaceAll(outputPath, "\\", "/")
-
-	// Merge voice files using FFmpeg with enhanced error handling
-	args := []string{
-		"-y",           // Overwrite output file
-		"-f", "concat", // Use concat demuxer
-		"-safe", "0", // Allow unsafe file paths
-		"-i", concatFileForFFmpeg, // Input concat file
-		"-c", "copy", // Copy streams without re-encoding
-		"-avoid_negative_ts", "make_zero", // Handle negative timestamps
-		outputPathForFFmpeg, // Output file
-	}
-
-	log.Printf("FFmpeg command: ffmpeg %s", strings.Join(args, " "))
-	log.Printf("Merging %d voice files...", len(voiceFiles))
-
-	cmd := exec.Command("ffmpeg", args...)
-
-	// Capture both stdout and stderr
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Printf("FFmpeg output: %s", string(output))
-		return 0, fmt.Errorf("failed to merge voice files: %v", err)
-	}
-
-	log.Printf("✓ Voice files merged successfully")
-
-	// Verify the output file was created
-	if _, err := os.Stat(outputPath); os.IsNotExist(err) {
-		return 0, fmt.Errorf("output file was not created: %s", outputPath)
-	}
-
-	// Get duration of merged voice file
-	duration, err := utils.GetAudioDuration(outputPath)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get audio duration: %v", err)
-	}
-
-	log.Printf("Merged voice file duration: %.2f seconds", duration)
-	return duration, nil
-}
-
-// createConcatFile creates a properly formatted concat file for FFmpeg
-func (ve *VideoEditor) createConcatFile(files []string, outputPath string) error {
-	file, err := os.Create(outputPath)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	for _, audioFile := range files {
-		// Convert to absolute path and normalize for FFmpeg
-		absPath, err := filepath.Abs(audioFile)
-		if err != nil {
-			return fmt.Errorf("failed to get absolute path for %s: %v", audioFile, err)
-		}
-
-		// Convert to forward slashes for FFmpeg compatibility
-		ffmpegPath := strings.ReplaceAll(absPath, "\\", "/")
-
-		// Escape the path for FFmpeg concat format
-		escapedPath := strings.ReplaceAll(ffmpegPath, "'", "'\\''")
-
-		// Write in the format expected by FFmpeg concat demuxer
-		if _, err := fmt.Fprintf(file, "file '%s'\n", escapedPath); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// ExtendBackgroundMusic loops the background music to match voice duration
-func (ve *VideoEditor) ExtendBackgroundMusic(targetDuration float64) error {
-	bgmPath := filepath.Join(ve.InputDir, "audio", "background.mp3")
-	outputPath := filepath.Join(ve.OutputDir, "extended_bgm.mp3")
-
-	log.Printf("Background music path: %s", bgmPath)
-	log.Printf("Target duration: %.2f seconds", targetDuration)
-
-	// Check if background music exists
-	if _, err := os.Stat(bgmPath); os.IsNotExist(err) {
-		return fmt.Errorf("background music file not found: %s", bgmPath)
-	}
-
-	// Get original BGM duration
-	originalDuration, err := utils.GetAudioDuration(bgmPath)
-	if err != nil {
-		return fmt.Errorf("failed to get BGM duration: %v", err)
-	}
-
-	log.Printf("Original BGM duration: %.2f seconds", originalDuration)
-
-	// Calculate how many loops we need
-	loops := int(targetDuration/originalDuration) + 1
-	log.Printf("Calculated loops needed: %d", loops)
-
-	// Convert paths for FFmpeg compatibility
-	bgmPathForFFmpeg := strings.ReplaceAll(bgmPath, "\\", "/")
-	outputPathForFFmpeg := strings.ReplaceAll(outputPath, "\\", "/")
-
-	// Create FFmpeg command to loop and trim background music
-	args := []string{
-		"-y",
-		"-stream_loop", strconv.Itoa(loops),
-		"-i", bgmPathForFFmpeg,
-		"-t", fmt.Sprintf("%.2f", targetDuration),
-		"-af", fmt.Sprintf("volume=%.2f", ve.Config.Settings.BGMVolume),
-		outputPathForFFmpeg,
-	}
-
-	log.Printf("FFmpeg BGM command: ffmpeg %s", strings.Join(args, " "))
-	log.Printf("Extending background music to %.2f seconds...", targetDuration)
-
-	cmd := exec.Command("ffmpeg", args...)
-
-	// Capture output for debugging
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Printf("FFmpeg BGM output: %s", string(output))
-		return fmt.Errorf("failed to extend background music: %v", err)
-	}
-
-	log.Printf("✓ Background music extended successfully")
-	return nil
-}
-
 // CreateSlideshow generates a slideshow from images with proper duration calculation
 func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 	imagesDir := filepath.Join(ve.InputDir, "images")
@@ -347,7 +145,312 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 	return nil
 }
 
-// GenerateFinalVideoSimplified creates final video with proper path handling
+// GetOverlayVideos finds and returns all overlay video files
+func (ve *VideoEditor) GetOverlayVideos() ([]string, error) {
+	overlayDir := filepath.Join(ve.InputDir, "overlays")
+
+	// Check if overlay directory exists
+	if _, err := os.Stat(overlayDir); os.IsNotExist(err) {
+		log.Printf("No overlay directory found at %s", overlayDir)
+		return []string{}, nil
+	}
+
+	// Get all video files in overlay directory
+	overlayFiles, err := utils.GetVideoFiles(overlayDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get overlay video files: %v", err)
+	}
+
+	// Convert to full paths
+	var fullPaths []string
+	for _, file := range overlayFiles {
+		fullPath := filepath.Join(overlayDir, file)
+		if _, err := os.Stat(fullPath); err == nil {
+			fullPaths = append(fullPaths, fullPath)
+		}
+	}
+
+	sort.Strings(fullPaths)
+	log.Printf("Found %d overlay videos", len(fullPaths))
+
+	return fullPaths, nil
+}
+
+// PrepareOverlayVideo processes a single overlay video to fit the screen and loop for the required duration
+func (ve *VideoEditor) PrepareOverlayVideo(overlayPath string, duration float64, index int) (string, error) {
+	outputPath := filepath.Join(ve.OutputDir, fmt.Sprintf("prepared_overlay_%d.mp4", index))
+
+	// Convert paths for FFmpeg compatibility
+	overlayForFFmpeg := strings.ReplaceAll(overlayPath, "\\", "/")
+	outputForFFmpeg := strings.ReplaceAll(outputPath, "\\", "/")
+
+	// Get the original overlay duration
+	originalDuration, err := ve.getVideoDuration(overlayPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to get overlay duration: %v", err)
+	}
+
+	log.Printf("Preparing overlay video %d: %s (original: %.2fs, target: %.2fs)",
+		index, filepath.Base(overlayPath), originalDuration, duration)
+
+	// Get overlay opacity from config (default 0.7 if not specified)
+	overlayOpacity := 0.7 // Default opacity
+	if ve.Config.Settings.OverlayOpacity > 0 {
+		overlayOpacity = ve.Config.Settings.OverlayOpacity
+	}
+
+	var videoFilter string
+	if originalDuration >= duration {
+		// If overlay is longer than or equal to target duration, just trim it
+		videoFilter = fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black",
+			ve.Config.Settings.Width, ve.Config.Settings.Height,
+			ve.Config.Settings.Width, ve.Config.Settings.Height)
+
+		args := []string{
+			"-y",
+			"-i", overlayForFFmpeg,
+			"-vf", videoFilter,
+			"-t", fmt.Sprintf("%.2f", duration),
+			"-c:v", "libx264",
+			"-r", strconv.Itoa(ve.Config.Settings.FPS),
+			"-pix_fmt", "yuv420p", // Use alpha channel for transparency
+			"-an", // Remove audio from overlay
+			outputForFFmpeg,
+		}
+
+		cmd := exec.Command("ffmpeg", args...)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			log.Printf("FFmpeg overlay preparation output: %s", string(output))
+			return "", fmt.Errorf("failed to prepare overlay video: %v", err)
+		}
+	} else {
+		// If overlay is shorter than target duration, loop it
+		// Calculate how many loops we need
+		loopCount := int(duration/originalDuration) + 1
+
+		videoFilter = fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black,format=yuva420p,colorchannelmixer=aa=%.2f",
+			ve.Config.Settings.Width, ve.Config.Settings.Height,
+			ve.Config.Settings.Width, ve.Config.Settings.Height,
+			overlayOpacity)
+
+		args := []string{
+			"-y",
+			"-stream_loop", strconv.Itoa(loopCount), // Loop the input
+			"-i", overlayForFFmpeg,
+			"-vf", videoFilter,
+			"-t", fmt.Sprintf("%.2f", duration), // Trim to exact duration
+			"-c:v", "libx264",
+			"-r", strconv.Itoa(ve.Config.Settings.FPS),
+			"-pix_fmt", "yuva420p", // Use alpha channel for transparency
+			"-an", // Remove audio from overlay
+			outputForFFmpeg,
+		}
+
+		log.Printf("Looping overlay %d times to reach target duration", loopCount)
+
+		cmd := exec.Command("ffmpeg", args...)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			log.Printf("FFmpeg overlay preparation output: %s", string(output))
+			return "", fmt.Errorf("failed to prepare overlay video: %v", err)
+		}
+	}
+
+	log.Printf("✓ Overlay video %d prepared successfully with %.0f%% opacity", index, overlayOpacity*100)
+	return outputPath, nil
+}
+
+// GenerateFinalVideoWithOverlays creates final video with overlay support
+func (ve *VideoEditor) GenerateFinalVideoWithOverlays() error {
+	slideshowPath := filepath.Join(ve.OutputDir, "slideshow.mp4")
+	voicePath := filepath.Join(ve.OutputDir, "merged_voice.mp3")
+	bgmPath := filepath.Join(ve.OutputDir, "extended_bgm.mp3")
+	finalPath := filepath.Join(ve.OutputDir, "final_video.mp4")
+
+	log.Printf("Generating final video with overlays...")
+	log.Printf("Slideshow: %s", slideshowPath)
+	log.Printf("Voice: %s", voicePath)
+	log.Printf("BGM: %s", bgmPath)
+	log.Printf("Final output: %s", finalPath)
+
+	// Get overlay opacity from config (default 0.7 if not specified)
+	overlayOpacity := 0.3 // Default opacity
+	if ve.Config.Settings.OverlayOpacity > 0 {
+		overlayOpacity = ve.Config.Settings.OverlayOpacity
+	}
+	// Verify required files exist
+	requiredFiles := map[string]string{
+		"slideshow": slideshowPath,
+		"voice":     voicePath,
+		"bgm":       bgmPath,
+	}
+
+	for name, path := range requiredFiles {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return fmt.Errorf("required %s file does not exist: %s", name, path)
+		}
+	}
+
+	// Get slideshow duration
+	slideshowDuration, err := ve.getVideoDuration(slideshowPath)
+	if err != nil {
+		return fmt.Errorf("failed to get slideshow duration: %v", err)
+	}
+
+	// Get overlay videos
+	overlayVideos, err := ve.GetOverlayVideos()
+	if err != nil {
+		return fmt.Errorf("failed to get overlay videos: %v", err)
+	}
+
+	// Convert paths for FFmpeg compatibility
+	slideshowForFFmpeg := strings.ReplaceAll(slideshowPath, "\\", "/")
+	voiceForFFmpeg := strings.ReplaceAll(voicePath, "\\", "/")
+	bgmForFFmpeg := strings.ReplaceAll(bgmPath, "\\", "/")
+	finalForFFmpeg := strings.ReplaceAll(finalPath, "\\", "/")
+
+	// Remove existing output file if it exists
+	if _, err := os.Stat(finalPath); err == nil {
+		if err := os.Remove(finalPath); err != nil {
+			log.Printf("Warning: failed to remove existing final video: %v", err)
+		}
+	}
+
+	var args []string
+	var filterComplex string
+
+	if len(overlayVideos) == 0 {
+		// No overlays - use simplified version
+		log.Printf("No overlay videos found, using simplified generation")
+		return ve.GenerateFinalVideoSimplified()
+	}
+
+	// Prepare overlay videos
+	var preparedOverlays []string
+	for i, overlayPath := range overlayVideos {
+		// Use full slideshow duration for each overlay (they will be timed separately in the overlay filter)
+		preparedOverlay, err := ve.PrepareOverlayVideo(overlayPath, slideshowDuration, i)
+		if err != nil {
+			log.Printf("Warning: failed to prepare overlay %d: %v", i, err)
+			continue
+		}
+		preparedOverlays = append(preparedOverlays, preparedOverlay)
+	}
+
+	if len(preparedOverlays) == 0 {
+		log.Printf("No overlay videos could be prepared, using simplified generation")
+		return ve.GenerateFinalVideoSimplified()
+	}
+
+	// Build FFmpeg command with overlays
+	args = append(args, "-y")
+	args = append(args, "-i", slideshowForFFmpeg) // [0] - slideshow
+
+	// Add prepared overlay inputs
+	for _, overlay := range preparedOverlays {
+		overlayForFFmpeg := strings.ReplaceAll(overlay, "\\", "/")
+		args = append(args, "-i", overlayForFFmpeg)
+	}
+
+	// Add audio inputs
+	args = append(args, "-i", voiceForFFmpeg) // voice
+	args = append(args, "-i", bgmForFFmpeg)   // bgm
+
+	// Build filter complex for overlays
+	// Build filter complex for overlays
+	baseVideo := "[0:v]"
+
+	if len(preparedOverlays) == 1 {
+		// Single overlay with proper alpha blending
+		filterComplex = fmt.Sprintf("%s[1:v]blend=all_mode=overlay:all_opacity=%.2f,format=yuv420p[final_video]",
+			baseVideo, overlayOpacity)
+	} else {
+		// Multiple overlays - apply them sequentially with proper blending
+		currentInput := baseVideo
+		for i := 0; i < len(preparedOverlays); i++ {
+			overlayIndex := i + 1
+			outputTag := fmt.Sprintf("[overlay%d]", i)
+
+			if i == len(preparedOverlays)-1 {
+				outputTag = "[final_video]"
+			}
+
+			// Calculate timing for each overlay (distribute evenly)
+			startTime := float64(i) * (slideshowDuration / float64(len(preparedOverlays)))
+			endTime := startTime + (slideshowDuration / float64(len(preparedOverlays)))
+
+			var blendFilter string
+			if i == len(preparedOverlays)-1 {
+				blendFilter = fmt.Sprintf("%s[%d:v]blend=all_mode=overlay:all_opacity=%.2f:enable='between(t,%.2f,%.2f)',format=yuv420p%s",
+					currentInput, overlayIndex, overlayOpacity, startTime, endTime, outputTag)
+			} else {
+				blendFilter = fmt.Sprintf("%s[%d:v]blend=all_mode=overlay:all_opacity=%.2f:enable='between(t,%.2f,%.2f)'%s",
+					currentInput, overlayIndex, overlayOpacity, startTime, endTime, outputTag)
+			}
+
+			if filterComplex != "" {
+				filterComplex += ";"
+			}
+			filterComplex += blendFilter
+			currentInput = outputTag
+		}
+	}
+
+	// Add audio mixing
+	voiceIndex := len(preparedOverlays) + 1
+	bgmIndex := len(preparedOverlays) + 2
+
+	audioMix := fmt.Sprintf("[%d:a]volume=%.2f[voice];[%d:a]volume=%.2f[bgm];[voice][bgm]amix=inputs=2:duration=first:dropout_transition=0[final_audio]",
+		voiceIndex, ve.Config.Settings.VoiceVolume, bgmIndex, ve.Config.Settings.BGMVolume)
+
+	if filterComplex != "" {
+		filterComplex += ";"
+	}
+	filterComplex += audioMix
+
+	args = append(args, "-filter_complex", filterComplex)
+	args = append(args, "-map", "[final_video]")
+	args = append(args, "-map", "[final_audio]")
+	args = append(args, "-c:v", "libx264")
+	args = append(args, "-c:a", "aac")
+	args = append(args, "-b:a", "128k")
+	args = append(args, "-r", strconv.Itoa(ve.Config.Settings.FPS))
+	args = append(args, "-shortest")
+	args = append(args, finalForFFmpeg)
+
+	log.Printf("FFmpeg final command with overlays: ffmpeg %s", strings.Join(args, " "))
+
+	cmd := exec.Command("ffmpeg", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("FFmpeg final video with overlays output: %s", string(output))
+		return fmt.Errorf("failed to generate final video with overlays: %v", err)
+	}
+
+	log.Printf("✓ Final video with overlays generated successfully")
+
+	// Clean up prepared overlay files
+	for _, overlay := range preparedOverlays {
+		if err := os.Remove(overlay); err != nil {
+			log.Printf("Warning: failed to clean up prepared overlay %s: %v", overlay, err)
+		}
+	}
+
+	// Verify final output
+	if _, err := os.Stat(finalPath); os.IsNotExist(err) {
+		return fmt.Errorf("final video file was not created: %s", finalPath)
+	}
+
+	// Log final video info
+	if finalDuration, err := ve.getVideoDuration(finalPath); err == nil {
+		log.Printf("Final video duration: %.2f seconds", finalDuration)
+	}
+
+	return nil
+}
+
+// GenerateFinalVideoSimplified creates final video with proper path handling (original method)
 func (ve *VideoEditor) GenerateFinalVideoSimplified() error {
 	slideshowPath := filepath.Join(ve.OutputDir, "slideshow.mp4")
 	voicePath := filepath.Join(ve.OutputDir, "merged_voice.mp3")
@@ -430,26 +533,6 @@ func (ve *VideoEditor) GenerateFinalVideoSimplified() error {
 	return nil
 }
 
-// getVideoDuration gets the duration of a video file
-func (ve *VideoEditor) getVideoDuration(videoPath string) (float64, error) {
-	// Convert path for FFmpeg compatibility
-	pathForFFmpeg := strings.ReplaceAll(videoPath, "\\", "/")
-
-	cmd := exec.Command("ffprobe", "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", pathForFFmpeg)
-	output, err := cmd.Output()
-	if err != nil {
-		return 0, err
-	}
-
-	durationStr := strings.TrimSpace(string(output))
-	duration, err := strconv.ParseFloat(durationStr, 64)
-	if err != nil {
-		return 0, err
-	}
-
-	return duration, nil
-}
-
 // ProcessVideo is the main method to process the entire video
 func (ve *VideoEditor) ProcessVideo() error {
 	log.Printf("🎬 Starting video processing...")
@@ -478,9 +561,9 @@ func (ve *VideoEditor) ProcessVideo() error {
 	}
 	log.Printf("✅ Slideshow created")
 
-	// Step 4: Generate final video
-	log.Printf("🎬 Step 4: Generating final video...")
-	if err := ve.GenerateFinalVideoSimplified(); err != nil {
+	// Step 4: Generate final video with overlays
+	log.Printf("🎬 Step 4: Generating final video with overlays...")
+	if err := ve.GenerateFinalVideoWithOverlays(); err != nil {
 		return fmt.Errorf("failed to generate final video: %v", err)
 	}
 	log.Printf("✅ Final video generated successfully!")

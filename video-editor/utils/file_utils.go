@@ -177,3 +177,44 @@ func FileExists(filePath string) bool {
 	_, err := os.Stat(filePath)
 	return !os.IsNotExist(err)
 }
+
+// GetVideoFiles returns all video files in the specified directory
+func GetVideoFiles(dir string) ([]string, error) {
+	var videoFiles []string
+
+	// Supported video extensions
+	videoExtensions := map[string]bool{
+		".mp4":  true,
+		".avi":  true,
+		".mov":  true,
+		".mkv":  true,
+		".wmv":  true,
+		".flv":  true,
+		".webm": true,
+		".m4v":  true,
+		".3gp":  true,
+		".ogv":  true,
+	}
+
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if !info.IsDir() {
+			ext := strings.ToLower(filepath.Ext(path))
+			if videoExtensions[ext] {
+				// Get relative path from the directory
+				relPath, err := filepath.Rel(dir, path)
+				if err != nil {
+					return err
+				}
+				videoFiles = append(videoFiles, relPath)
+			}
+		}
+
+		return nil
+	})
+
+	return videoFiles, err
+}
