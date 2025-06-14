@@ -445,7 +445,7 @@ func (ve *VideoEditor) validateGPUSetup() error {
 	return nil
 }
 
-// Add method to get optimal encoder settings for current setup
+// Fix the getOptimalEncoderSettings method to avoid encoder conflicts
 func (ve *VideoEditor) getOptimalEncoderSettings() (string, []string) {
 	// Validate GPU setup first
 	if err := ve.validateGPUSetup(); err != nil {
@@ -458,19 +458,16 @@ func (ve *VideoEditor) getOptimalEncoderSettings() (string, []string) {
 		if ve.isGoogleColab() && ve.isT4Available() {
 			log.Printf("🚀 Using optimized T4 GPU settings for Google Colab")
 			return "h264_nvenc", []string{
-				"-preset", "p4", // Use newer preset for T4
-				"-tune", "hq", // High quality
+				"-preset", "fast", // Use standard preset that works with T4
 				"-rc", "vbr", // Variable bitrate
-				"-cq", "21", // Slightly higher CQ for stability
-				"-b:v", "6M", // Moderate bitrate for T4
-				"-maxrate", "8M", // Conservative max rate
+				"-cq", "21", // Constant quality
+				"-b:v", "6M", // Target bitrate
+				"-maxrate", "8M", // Max bitrate
 				"-bufsize", "12M", // Buffer size
 				"-profile:v", "main", // Use main profile for compatibility
 				"-level", "4.0", // H.264 level
-				"-bf", "2", // Fewer B-frames for stability
-				"-g", "120", // Smaller GOP size
-				"-spatial_aq", "1", // Spatial AQ
-				"-temporal_aq", "1", // Temporal AQ
+				"-bf", "2", // B-frames
+				"-g", "120", // GOP size
 			}
 		}
 
@@ -493,7 +490,7 @@ func (ve *VideoEditor) getOptimalEncoderSettings() (string, []string) {
 	log.Printf("🖥️ Using CPU encoding (fallback)")
 	if ve.isGoogleColab() {
 		return "libx264", []string{
-			"-preset", "medium", // Balanced preset for Colab
+			"-preset", "medium", // Standard libx264 preset
 			"-crf", "23", // Good quality/size ratio
 			"-threads", "2", // Limit threads in Colab
 			"-tune", "film", // Good for slideshow content
@@ -952,8 +949,7 @@ func (ve *VideoEditor) PrepareOverlayVideosConcurrently(overlayVideos []string, 
 	return validOverlays, nil
 }
 
-// GenerateFinalVideoWithOverlays creates final video with overlay support
-// Update GenerateFinalVideoWithOverlays to use concurrent overlay preparation
+// Fix the GenerateFinalVideoWithOverlays method to use consistent encoder
 func (ve *VideoEditor) GenerateFinalVideoWithOverlays() error {
 	slideshowPath := filepath.Join(ve.OutputDir, "slideshow.mp4")
 	voicePath := filepath.Join(ve.OutputDir, "merged_voice.mp3")
@@ -1022,7 +1018,11 @@ func (ve *VideoEditor) GenerateFinalVideoWithOverlays() error {
 		}
 	}
 
-	// Build FFmpeg command with overlays (rest of the method remains the same)
+	// Get encoder settings for final video - CONSISTENT ENCODER
+	encoder, encoderArgs := ve.getOptimalEncoderSettings()
+	log.Printf("Using encoder: %s for final video generation", encoder)
+
+	// Build FFmpeg command with overlays
 	var args []string
 	var filterComplex string
 
@@ -1072,8 +1072,7 @@ func (ve *VideoEditor) GenerateFinalVideoWithOverlays() error {
 			currentInput = outputTag
 		}
 	}
-	// Get encoder settings for final video
-	encoder, encoderArgs := ve.getEncoderSettings()
+
 	// Add audio mixing
 	voiceIndex := len(preparedOverlays) + 1
 	bgmIndex := len(preparedOverlays) + 2
@@ -1086,17 +1085,16 @@ func (ve *VideoEditor) GenerateFinalVideoWithOverlays() error {
 	}
 	filterComplex += audioMix
 
+	// Build the final FFmpeg command with consistent encoder
 	args = append(args, "-filter_complex", filterComplex)
 	args = append(args, "-map", "[final_video]")
 	args = append(args, "-map", "[final_audio]")
-	args = append(args, "-c:v", encoder) // Use selected encoder
-	args = append(args, "-c:a", "aac")
-	args = append(args, "-b:a", "128k")
-	args = append(args, "-r", strconv.Itoa(ve.Config.Settings.FPS))
-	args = append(args, "-shortest")
-	args = append(args, finalForFFmpeg)
+	args = append(args, "-c:v", encoder) // Use selected encoder consistently
 
+	// Add encoder-specific arguments
 	args = append(args, encoderArgs...)
+
+	// Add common arguments
 	args = append(args,
 		"-c:a", "aac",
 		"-b:a", "128k",
@@ -1104,6 +1102,7 @@ func (ve *VideoEditor) GenerateFinalVideoWithOverlays() error {
 		"-shortest",
 		finalForFFmpeg,
 	)
+
 	log.Printf("FFmpeg final command with overlays: ffmpeg %s", strings.Join(args, " "))
 
 	cmd := exec.Command("ffmpeg", args...)
@@ -1135,7 +1134,7 @@ func (ve *VideoEditor) GenerateFinalVideoWithOverlays() error {
 	return nil
 }
 
-// GenerateFinalVideoSimplified creates final video with proper path handling (original method)
+// Also update the GenerateFinalVideoSimplified method to use consistent encoder
 func (ve *VideoEditor) GenerateFinalVideoSimplified() error {
 	slideshowPath := filepath.Join(ve.OutputDir, "slideshow.mp4")
 	voicePath := filepath.Join(ve.OutputDir, "merged_voice.mp3")
@@ -1174,7 +1173,11 @@ func (ve *VideoEditor) GenerateFinalVideoSimplified() error {
 		}
 	}
 
-	// Simplified FFmpeg command without complex overlays
+	// Get encoder settings for consistency
+	encoder, encoderArgs := ve.getOptimalEncoderSettings()
+	log.Printf("Using encoder: %s for simplified final video", encoder)
+
+	// Build FFmpeg command args
 	args := []string{
 		"-y",
 		"-i", slideshowForFFmpeg, // [0] - slideshow video
@@ -1185,12 +1188,25 @@ func (ve *VideoEditor) GenerateFinalVideoSimplified() error {
 			ve.Config.Settings.VoiceVolume, ve.Config.Settings.BGMVolume),
 		"-map", "0:v", // Use video from slideshow
 		"-map", "[final_audio]", // Use mixed audio
-		"-c:v", "copy", // Copy video stream (faster)
+	}
+
+	// Add encoder and its settings
+	if encoder == "h264_nvenc" && ve.UseGPU {
+		// Use GPU encoding - re-encode video for consistency
+		args = append(args, "-c:v", encoder)
+		args = append(args, encoderArgs...)
+	} else {
+		// Use CPU encoding or copy stream if already compatible
+		args = append(args, "-c:v", "copy") // Copy video stream if possible
+	}
+
+	// Add audio encoding settings
+	args = append(args,
 		"-c:a", "aac",
-		"-b:a", "128k", // Set audio bitrate
+		"-b:a", "128k",
 		"-shortest", // End when shortest stream ends
 		finalForFFmpeg,
-	}
+	)
 
 	log.Printf("FFmpeg final command: ffmpeg %s", strings.Join(args, " "))
 
@@ -1215,6 +1231,30 @@ func (ve *VideoEditor) GenerateFinalVideoSimplified() error {
 		log.Printf("Final video duration: %.2f seconds", finalDuration)
 	}
 
+	return nil
+}
+
+// Add a method to test encoder compatibility before use
+func (ve *VideoEditor) testEncoderCompatibility() error {
+	if !ve.UseGPU {
+		return nil
+	}
+
+	log.Printf("🧪 Testing encoder compatibility...")
+
+	// Test h264_nvenc with a simple encode
+	testCmd := exec.Command("ffmpeg",
+		"-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=1",
+		"-c:v", "h264_nvenc", "-preset", "fast", "-cq", "25",
+		"-frames:v", "5", "-f", "null", "-")
+
+	if err := testCmd.Run(); err != nil {
+		log.Printf("⚠️ h264_nvenc encoder test failed: %v", err)
+		ve.UseGPU = false
+		return fmt.Errorf("GPU encoder not compatible")
+	}
+
+	log.Printf("✅ GPU encoder compatibility test passed")
 	return nil
 }
 
