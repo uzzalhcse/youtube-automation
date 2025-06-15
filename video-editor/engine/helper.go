@@ -237,7 +237,7 @@ func (ve *VideoEditor) getVideoDuration(videoPath string) (float64, error) {
 }
 
 // Modified getEncoderSettings method for Google Colab T4 GPU
-func (ve *VideoEditor) getEncoderSettings() (string, []string) {
+func (ve *VideoEditor) getEncoderSettings1() (string, []string) {
 	if ve.UseGPU {
 		// Check for T4 GPU in Google Colab
 		if ve.isGoogleColab() && ve.isT4Available() {
@@ -348,7 +348,7 @@ func (ve *VideoEditor) isT4Available() bool {
 }
 
 // Modified isEncoderAvailable method with better error handling for Colab
-func (ve *VideoEditor) isEncoderAvailable(encoder string) bool {
+func (ve *VideoEditor) isEncoderAvailable1(encoder string) bool {
 	// First check if nvidia-smi is available (indicates NVIDIA GPU)
 	if encoder == "h264_nvenc" {
 		if cmd := exec.Command("nvidia-smi"); cmd.Run() != nil {
@@ -369,7 +369,7 @@ func (ve *VideoEditor) isEncoderAvailable(encoder string) bool {
 }
 
 // NEW: Method to optimize settings for Colab environment
-func (ve *VideoEditor) optimizeForColab() {
+func (ve *VideoEditor) optimizeForColab1() {
 	if ve.isGoogleColab() {
 		log.Printf("🔧 Optimizing settings for Google Colab environment")
 
@@ -735,5 +735,57 @@ func (ve *VideoEditor) concatenateWithBlackScreen(slideshowPath, blackScreenPath
 	}
 
 	log.Printf("Successfully concatenated video to: %s", absOutput)
+	return nil
+}
+
+// GenerateFinalVideoSimplified generates final video without overlays (fallback method)
+func (ve *VideoEditor) GenerateFinalVideoSimplified() error {
+	slideshowPath := filepath.Join(ve.OutputDir, "slideshow.mp4")
+	voicePath := filepath.Join(ve.OutputDir, "merged_voice.mp3")
+	bgmPath := filepath.Join(ve.OutputDir, "extended_bgm.mp3")
+	finalPath := filepath.Join(ve.OutputDir, "final_video.mp4")
+
+	log.Printf("Generating simplified final video without overlays...")
+
+	// Get encoder settings
+	encoder, encoderArgs := ve.getEncoderSettings()
+
+	// Convert paths for FFmpeg
+	slideshowForFFmpeg := strings.ReplaceAll(slideshowPath, "\\", "/")
+	voiceForFFmpeg := strings.ReplaceAll(voicePath, "\\", "/")
+	bgmForFFmpeg := strings.ReplaceAll(bgmPath, "\\", "/")
+	finalForFFmpeg := strings.ReplaceAll(finalPath, "\\", "/")
+
+	args := []string{
+		"-y",
+		"-i", slideshowForFFmpeg,
+		"-i", voiceForFFmpeg,
+		"-i", bgmForFFmpeg,
+		"-filter_complex", "[1:a][2:a]amix=inputs=2:duration=first:dropout_transition=0[a]",
+		"-map", "0:v",
+		"-map", "[a]",
+		"-c:v", encoder,
+	}
+
+	args = append(args, encoderArgs...)
+	args = append(args,
+		"-c:a", "aac",
+		"-b:a", "128k",
+		"-ar", "44100",
+		"-ac", "2",
+		"-pix_fmt", "yuv420p",
+		"-movflags", "+faststart",
+		"-preset", ve.getPresetForEncoder(encoder),
+		finalForFFmpeg,
+	)
+
+	cmd := exec.Command("ffmpeg", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("FFmpeg simplified video generation output: %s", string(output))
+		return fmt.Errorf("failed to generate simplified final video: %v", err)
+	}
+
+	log.Printf("✓ Simplified final video generated successfully: %s", finalPath)
 	return nil
 }
