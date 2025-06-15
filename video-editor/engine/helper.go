@@ -681,3 +681,56 @@ func (ve *VideoEditor) GenerateFinalVideoSimplified() error {
 	log.Printf("✓ Simplified final video generated successfully: %s", finalPath)
 	return nil
 }
+
+// NEW: Initialize multi-GPU setup
+func (ve *VideoEditor) initializeMultiGPU() error {
+	log.Printf("🔧 Initializing multi-GPU setup...")
+
+	var availableGPUs []GPUDevice
+
+	// Check NVIDIA GPU (MX450)
+	if ve.isNVIDIAGPUAvailable() {
+		encoder, args := ve.getNVIDIAEncoderSettings()
+		nvGPU := GPUDevice{
+			Type:     "nvidia",
+			Device:   "0",
+			Encoder:  encoder,
+			Args:     args,
+			Priority: 2, // Higher priority for discrete GPU
+		}
+		availableGPUs = append(availableGPUs, nvGPU)
+		log.Printf("✅ NVIDIA GeForce MX450 added to GPU pool")
+	}
+
+	// Check Intel GPU (Iris Xe)
+	if ve.isIntelGPUAvailable() {
+		encoder, args := ve.getIntelEncoderSettings()
+		intelGPU := GPUDevice{
+			Type:     "intel",
+			Device:   "0",
+			Encoder:  encoder,
+			Args:     args,
+			Priority: 1, // Lower priority for integrated GPU
+		}
+		availableGPUs = append(availableGPUs, intelGPU)
+		log.Printf("✅ Intel Iris Xe added to GPU pool")
+	}
+
+	if len(availableGPUs) >= 2 {
+		ve.UseMultiGPU = true
+		ve.GPUDevices = availableGPUs
+		ve.GPUPool = make(chan GPUDevice, len(availableGPUs))
+
+		// Fill GPU pool
+		for _, gpu := range availableGPUs {
+			ve.GPUPool <- gpu
+		}
+
+		log.Printf("🚀 Multi-GPU setup complete: %d GPUs available", len(availableGPUs))
+		return nil
+	}
+
+	log.Printf("⚠️ Only %d GPU(s) available, falling back to single GPU", len(availableGPUs))
+	ve.UseMultiGPU = false
+	return nil
+}
