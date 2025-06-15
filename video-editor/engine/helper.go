@@ -236,70 +236,6 @@ func (ve *VideoEditor) getVideoDuration(videoPath string) (float64, error) {
 	return duration, nil
 }
 
-// Modified getEncoderSettings method for Google Colab T4 GPU
-func (ve *VideoEditor) getEncoderSettings1() (string, []string) {
-	if ve.UseGPU {
-		// Check for T4 GPU in Google Colab
-		if ve.isGoogleColab() && ve.isT4Available() {
-			log.Printf("🚀 Detected Google Colab T4 GPU, using optimized settings")
-			return "h264_nvenc", []string{
-				"-preset", "p4", // Use newer preset naming for T4
-				"-tune", "hq", // High quality tuning
-				"-rc", "vbr", // Variable bitrate
-				"-cq", "19", // Lower CQ for better quality on T4
-				"-b:v", "8M", // Higher bitrate for T4's capability
-				"-maxrate", "12M", // Higher max bitrate
-				"-bufsize", "16M", // Larger buffer
-				"-profile:v", "high", // High profile
-				"-level", "4.1", // H.264 level
-				"-bf", "3", // B-frames for efficiency
-				"-g", "250", // GOP size
-			}
-		}
-
-		// Try NVIDIA GPU (including T4)
-		if ve.isEncoderAvailable("h264_nvenc") {
-			return "h264_nvenc", []string{
-				"-preset", "fast", // Fallback for older drivers
-				"-rc", "vbr",
-				"-cq", "20",
-				"-b:v", "6M",
-				"-maxrate", "10M",
-				"-bufsize", "12M",
-				"-profile:v", "high",
-			}
-		}
-
-		// Try AMD GPU
-		if ve.isEncoderAvailable("h264_amf") {
-			return "h264_amf", []string{
-				"-quality", "speed",
-				"-rc", "vbr_peak",
-				"-qp_i", "20",
-				"-qp_p", "22",
-				"-qp_b", "24",
-			}
-		}
-
-		// Try Intel GPU
-		if ve.isEncoderAvailable("h264_qsv") {
-			return "h264_qsv", []string{
-				"-preset", "fast",
-				"-global_quality", "20",
-			}
-		}
-
-		log.Printf("⚠️ GPU encoding requested but no compatible GPU encoder found, falling back to CPU")
-	}
-
-	// CPU fallback - optimized for Colab's CPU
-	return "libx264", []string{
-		"-preset", "fast",
-		"-crf", "20",
-		"-threads", "2", // Limit threads in Colab
-	}
-}
-
 // NEW: Check if running in Google Colab
 func (ve *VideoEditor) isGoogleColab() bool {
 	// Check for Colab-specific environment variables
@@ -345,50 +281,6 @@ func (ve *VideoEditor) isT4Available() bool {
 	}
 
 	return false
-}
-
-// Modified isEncoderAvailable method with better error handling for Colab
-func (ve *VideoEditor) isEncoderAvailable1(encoder string) bool {
-	// First check if nvidia-smi is available (indicates NVIDIA GPU)
-	if encoder == "h264_nvenc" {
-		if cmd := exec.Command("nvidia-smi"); cmd.Run() != nil {
-			log.Printf("nvidia-smi not found, NVIDIA GPU encoding not available")
-			return false
-		}
-	}
-
-	// Check if FFmpeg supports the encoder
-	cmd := exec.Command("ffmpeg", "-hide_banner", "-encoders")
-	output, err := cmd.Output()
-	if err != nil {
-		log.Printf("Failed to check encoders: %v", err)
-		return false
-	}
-
-	return strings.Contains(string(output), encoder)
-}
-
-// NEW: Method to optimize settings for Colab environment
-func (ve *VideoEditor) optimizeForColab1() {
-	if ve.isGoogleColab() {
-		log.Printf("🔧 Optimizing settings for Google Colab environment")
-
-		// Reduce worker count for Colab's limited resources
-		if ve.MaxWorkers > 2 {
-			ve.MaxWorkers = 2
-			ve.WorkerPool = make(chan struct{}, ve.MaxWorkers)
-			log.Printf("Reduced workers to %d for Colab", ve.MaxWorkers)
-		}
-
-		// Enable GPU if T4 is available
-		if ve.isT4Available() {
-			ve.UseGPU = true
-			ve.GPUDevice = "0"
-			log.Printf("✅ T4 GPU detected and enabled")
-		} else {
-			log.Printf("⚠️ T4 GPU not detected, using CPU")
-		}
-	}
 }
 
 // generateZoomConfig creates a configurable zoom configuration
