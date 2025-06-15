@@ -25,13 +25,14 @@ type ZoomConfig struct {
 
 // ChromaKeyConfig holds configuration for chroma key removal
 type ChromaKeyConfig struct {
-	Enabled       bool    // Whether to apply chroma key removal
-	Color         string  // Color to remove (e.g., "green", "blue", "#00FF00")
-	Similarity    float64 // Color similarity threshold (0.0-1.0, default: 0.3)
-	Blend         float64 // Edge blending amount (0.0-1.0, default: 0.1)
-	YUVThreshold  float64 // YUV threshold for better keying (0.0-1.0, default: 0.0)
-	AutoAdjust    bool    // Auto-adjust thresholds for better results
-	SpillSuppress bool    // Enable spill suppression for better edge quality
+	Enabled       bool    `json:"enabled"`
+	Color         string  `json:"color"`
+	Similarity    float64 `json:"similarity"`
+	Blend         float64 `json:"blend"`
+	YUVThreshold  float64 `json:"yuv_threshold"`
+	EdgeFeather   float64 `json:"edge_feather"`
+	AutoAdjust    bool    `json:"auto_adjust"`
+	SpillSuppress bool    `json:"spill_suppress"`
 }
 
 // Add these fields to VideoEditor struct
