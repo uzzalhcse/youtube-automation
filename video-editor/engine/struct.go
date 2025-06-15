@@ -40,8 +40,21 @@ type VideoEditor struct {
 	InputDir   string
 	OutputDir  string
 	Config     *models.VideoConfig
-	MaxWorkers int           // Add this field for configurable concurrency
-	WorkerPool chan struct{} // Add this field for worker pool
-	UseGPU     bool          // NEW: GPU rendering flag
-	GPUDevice  string        // NEW: GPU device (e.g., "0" for first GPU, "cuda", "opencl")
+	MaxWorkers int
+	WorkerPool chan struct{}
+	UseGPU     bool
+	GPUDevice  string
+	// NEW: Multi-GPU support
+	UseMultiGPU bool
+	GPUDevices  []GPUDevice    // List of available GPU devices
+	GPUPool     chan GPUDevice // Pool of available GPUs for work distribution
+}
+
+// NEW: GPU Device structure
+type GPUDevice struct {
+	Type     string   // "nvidia", "intel", "amd"
+	Device   string   // Device identifier
+	Encoder  string   // Encoder name (h264_nvenc, h264_qsv, etc.)
+	Args     []string // Encoder-specific arguments
+	Priority int      // Higher number = higher priority
 }

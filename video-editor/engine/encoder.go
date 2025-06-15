@@ -96,10 +96,27 @@ func (ve *VideoEditor) isNVIDIAGPUAvailable() bool {
 	log.Printf("🔍 Checking NVIDIA GPU availability...")
 
 	// Method 1: Check nvidia-smi for GPU presence
-	cmd := exec.Command("nvidia-smi", "-L")
-	output, err := cmd.Output()
+	// Try common NVIDIA paths
+	nvidiaPaths := []string{
+		"nvidia-smi", // Try PATH first
+		//`C:\Windows\System32\DriverStore\FileRepository\nvhmi.inf_amd64_7c0e4faf7f6038f7\nvidia-smi.exe`,
+	}
+
+	var cmd *exec.Cmd
+	var output []byte
+	var err error
+
+	for _, path := range nvidiaPaths {
+		cmd = exec.Command(path, "-L")
+		output, err = cmd.Output()
+		if err == nil {
+			break
+		}
+		log.Printf("Tried path %s: %v", path, err)
+	}
+
 	if err != nil {
-		log.Printf("nvidia-smi not available: %v", err)
+		log.Printf("nvidia-smi not available in any known location: %v", err)
 		return false
 	}
 
@@ -508,19 +525,17 @@ func (ve *VideoEditor) testSpecificEncoder(encoder string) bool {
 	return testCmd.Run() == nil
 }
 
-// Updated optimizeForColab method
+// Updated optimizeForColab method with multi-GPU support
 func (ve *VideoEditor) optimizeForColab() {
 	if ve.isGoogleColab() {
 		log.Printf("🔧 Optimizing settings for Google Colab environment")
 
-		// Reduce worker count for Colab's limited resources
 		if ve.MaxWorkers > 2 {
 			ve.MaxWorkers = 2
 			ve.WorkerPool = make(chan struct{}, ve.MaxWorkers)
 			log.Printf("Reduced workers to %d for Colab", ve.MaxWorkers)
 		}
 
-		// Enable GPU if T4 is available and NVENC works
 		if ve.isT4Available() && ve.testNVENCEncoder() {
 			ve.UseGPU = true
 			ve.GPUDevice = "0"
@@ -529,17 +544,23 @@ func (ve *VideoEditor) optimizeForColab() {
 			ve.UseGPU = false
 			log.Printf("⚠️ T4 GPU not detected or NVENC not working, using CPU")
 		}
-	} else {
-		// Local PC optimization
-		log.Printf("🔧 Optimizing settings for local PC environment")
 
-		// Debug GPU setup for local PC
+		// Disable multi-GPU in Colab
+		ve.UseMultiGPU = false
+	} else {
+		log.Printf("🔧 Optimizing settings for local PC environment with multi-GPU support")
+
+		// For local PC with multi-GPU, increase worker count
+		if ve.UseMultiGPU && ve.MaxWorkers < 6 {
+			ve.MaxWorkers = 6 // Increased for multi-GPU efficiency
+			ve.WorkerPool = make(chan struct{}, ve.MaxWorkers)
+			log.Printf("Increased workers to %d for multi-GPU processing", ve.MaxWorkers)
+		}
+
 		ve.debugGPUSetup()
 
-		// For local PC, be more aggressive with NVIDIA detection
 		if ve.UseGPU && ve.checkNVIDIAPresence() {
-			// Force NVIDIA if hardware is present
-			log.Printf("🎯 Local PC: Forcing NVIDIA GPU usage")
+			log.Printf("🎯 Local PC: NVIDIA GPU detected for multi-GPU setup")
 		}
 	}
 }

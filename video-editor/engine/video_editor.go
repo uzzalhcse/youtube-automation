@@ -22,7 +22,11 @@ func NewVideoEditor(inputDir, outputDir string, config *models.VideoConfig) *Vid
 		maxWorkers = config.Settings.MaxConcurrentJobs
 	}
 
-	// Initialize GPU settings
+	// For multi-GPU, increase worker count
+	if maxWorkers < 4 {
+		maxWorkers = 4 // Minimum for effective multi-GPU usage
+	}
+
 	useGPU := config.Settings.UseGPU
 	gpuDevice := "0"
 	if config.Settings.GPUDevice != "" {
@@ -39,9 +43,12 @@ func NewVideoEditor(inputDir, outputDir string, config *models.VideoConfig) *Vid
 		GPUDevice:  gpuDevice,
 	}
 
-	// NEW: Optimize for Colab environment
-	ve.optimizeForColab()
+	// Initialize multi-GPU setup
+	if ve.UseGPU {
+		ve.initializeMultiGPU()
+	}
 
+	ve.optimizeForColab()
 	return ve
 }
 
@@ -114,7 +121,6 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 	log.Printf("Slideshow output: %s", outputPath)
 	log.Printf("Target slideshow duration: %.2f seconds", targetDuration)
 
-	// Get all image files
 	imageFiles, err := utils.GetImageFiles(imagesDir)
 	if err != nil {
 		return fmt.Errorf("failed to get image files: %v", err)
@@ -127,18 +133,16 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 	log.Printf("Found %d image files", len(imageFiles))
 	sort.Strings(imageFiles)
 
-	// Calculate image duration based on configuration
+	// Calculate image duration
 	var imageDuration float64
 	var actualImagesDuration float64
 
 	if ve.Config.Settings.UsePartialImageDuration && ve.Config.Settings.ImagesDurationMinutes > 0 {
-		// Mode 2: Use specified duration for all images (convert minutes to seconds)
 		actualImagesDuration = ve.Config.Settings.ImagesDurationMinutes * 60.0
 		imageDuration = actualImagesDuration / float64(len(imageFiles))
 		log.Printf("Using partial image duration: %.2f minutes (%.2f seconds) for all images",
 			ve.Config.Settings.ImagesDurationMinutes, actualImagesDuration)
 	} else {
-		// Mode 1: Spread images across entire duration (current behavior)
 		actualImagesDuration = targetDuration
 		imageDuration = targetDuration / float64(len(imageFiles))
 		log.Printf("Using full video duration for images: %.2f seconds", actualImagesDuration)
@@ -146,16 +150,17 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 
 	log.Printf("Duration per image: %.2f seconds", imageDuration)
 
-	// Check animation settings
 	useAnimations := ve.Config.Settings.UseAnimationEffects
 	log.Printf("Animation effects: %s", map[bool]string{true: "ENABLED", false: "DISABLED"}[useAnimations])
 
-	encoder, encoderArgs := ve.getEncoderSettings()
-
-	// Log GPU/CPU usage
-	if ve.UseGPU {
-		log.Printf("🚀 Using GPU acceleration with encoder: %s", encoder)
+	// Multi-GPU processing log
+	if ve.UseMultiGPU {
+		log.Printf("🚀 Using Multi-GPU acceleration with %d GPUs", len(ve.GPUDevices))
+	} else if ve.UseGPU {
+		encoder, _ := ve.getEncoderSettings()
+		log.Printf("🚀 Using single GPU acceleration with encoder: %s", encoder)
 	} else {
+		encoder, _ := ve.getEncoderSettings()
 		log.Printf("🖥️ Using CPU encoding with encoder: %s", encoder)
 	}
 
@@ -179,12 +184,11 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 		}
 	}
 
-	// Ensure output directory exists
 	if err := os.MkdirAll(ve.OutputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %v", err)
 	}
 
-	// CONCURRENT PROCESSING: Create individual video clips
+	// MULTI-GPU CONCURRENT PROCESSING
 	var videoClips []string
 	videoClips = make([]string, len(imageFiles))
 
@@ -192,9 +196,9 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 	var mu sync.Mutex
 	errorChan := make(chan error, len(imageFiles))
 
-	log.Printf("Using %d concurrent workers for clip generation", ve.MaxWorkers)
+	log.Printf("Using %d concurrent workers for clip generation with multi-GPU support", ve.MaxWorkers)
 
-	// Process clips concurrently
+	// Process clips concurrently with GPU balancing
 	for i, img := range imageFiles {
 		wg.Add(1)
 		go func(index int, imgPath string) {
@@ -204,6 +208,35 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 			ve.WorkerPool <- struct{}{}
 			defer func() { <-ve.WorkerPool }()
 
+			// Get GPU for this task
+			var gpu GPUDevice
+			var useSpecificGPU bool
+
+			if ve.UseMultiGPU {
+				select {
+				case gpu = <-ve.GPUPool:
+					useSpecificGPU = true
+					defer func() { ve.GPUPool <- gpu }() // Return GPU to pool
+				default:
+					// If no GPU available, fall back to default
+					encoder, encoderArgs := ve.getEncoderSettings()
+					gpu = GPUDevice{
+						Type:    "fallback",
+						Encoder: encoder,
+						Args:    encoderArgs,
+					}
+					useSpecificGPU = false
+				}
+			} else {
+				encoder, encoderArgs := ve.getEncoderSettings()
+				gpu = GPUDevice{
+					Type:    "single",
+					Encoder: encoder,
+					Args:    encoderArgs,
+				}
+				useSpecificGPU = false
+			}
+
 			clipPath := filepath.Join(ve.OutputDir, fmt.Sprintf("clip_%d.mp4", index))
 			imgPathForFFmpeg := strings.ReplaceAll(imgPath, "\\", "/")
 			clipPathForFFmpeg := strings.ReplaceAll(clipPath, "\\", "/")
@@ -212,31 +245,39 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 			var effectName string
 
 			if useAnimations {
-				// Generate zoom configuration and filter
 				zoomConfig := ve.generateZoomConfig(index)
 				videoFilter = ve.createZoomFilter(zoomConfig, imageDuration, ve.Config.Settings.Width, ve.Config.Settings.Height)
 				effectName = ve.getEffectName(zoomConfig.Effect)
 			} else {
-				// Simple static filter without animation
 				videoFilter = ve.createStaticFilter(ve.Config.Settings.Width, ve.Config.Settings.Height)
 				effectName = "static"
 			}
 
-			log.Printf("Creating clip %d with %s effect (%s)...", index+1, effectName,
-				map[bool]string{true: "GPU", false: "CPU"}[ve.UseGPU])
+			log.Printf("Creating clip %d with %s effect using %s GPU (%s)...",
+				index+1, effectName, gpu.Type, gpu.Encoder)
 
-			// Build args with GPU/CPU encoder
+			// Build args with selected GPU encoder
 			args := []string{
 				"-y",
 				"-loop", "1",
 				"-i", imgPathForFFmpeg,
 				"-vf", videoFilter,
 				"-t", fmt.Sprintf("%.2f", imageDuration),
-				"-c:v", encoder,
+				"-c:v", gpu.Encoder,
 			}
 
-			// Add encoder-specific arguments
-			args = append(args, encoderArgs...)
+			// Add GPU-specific arguments
+			args = append(args, gpu.Args...)
+
+			// Add Intel GPU specific device selection
+			if gpu.Type == "intel" && useSpecificGPU {
+				args = append(args, "-init_hw_device", "qsv=hw")
+			}
+
+			// Add NVIDIA GPU specific device selection
+			if gpu.Type == "nvidia" && useSpecificGPU {
+				args = append(args, "-gpu", gpu.Device)
+			}
 
 			// Add common arguments
 			args = append(args,
@@ -245,8 +286,8 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 				"-avoid_negative_ts", "make_zero",
 			)
 
-			// Adjust thread count based on GPU/CPU
-			if !ve.UseGPU {
+			// Adjust thread count based on GPU type
+			if gpu.Type == "intel" || gpu.Type == "fallback" {
 				args = append(args, "-threads", "1")
 			}
 
@@ -256,7 +297,7 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 			output, err := cmd.CombinedOutput()
 			if err != nil {
 				log.Printf("FFmpeg clip creation output: %s", string(output))
-				errorChan <- fmt.Errorf("failed to create clip %d: %v", index, err)
+				errorChan <- fmt.Errorf("failed to create clip %d with %s GPU: %v", index, gpu.Type, err)
 				return
 			}
 
@@ -298,7 +339,7 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 		return fmt.Errorf("failed to concatenate clips: %v", err)
 	}
 
-	// If using partial duration, add black screen for remaining time
+	// Handle partial duration
 	if ve.Config.Settings.UsePartialImageDuration && actualImagesDuration < targetDuration {
 		blackScreenDuration := targetDuration - actualImagesDuration
 		log.Printf("Adding black screen for remaining %.2f seconds (%.2f minutes)",
@@ -309,8 +350,9 @@ func (ve *VideoEditor) CreateSlideshow(targetDuration float64) error {
 		}
 	}
 
-	log.Printf("✓ Slideshow created successfully with %s effects",
-		map[bool]string{true: "animated", false: "static"}[useAnimations])
+	log.Printf("✓ Slideshow created successfully with %s effects using %s",
+		map[bool]string{true: "animated", false: "static"}[useAnimations],
+		map[bool]string{true: "multi-GPU", false: "single processing"}[ve.UseMultiGPU])
 
 	// Clean up temporary files
 	for _, clip := range videoClips {
@@ -455,7 +497,6 @@ func (ve *VideoEditor) PrepareOverlayVideo(overlayPath string, duration float64,
 	return outputPath, nil
 }
 
-// Add concurrent overlay preparation method
 func (ve *VideoEditor) PrepareOverlayVideosConcurrently(overlayVideos []string, duration float64) ([]string, error) {
 	if len(overlayVideos) == 0 {
 		return []string{}, nil
@@ -468,7 +509,7 @@ func (ve *VideoEditor) PrepareOverlayVideosConcurrently(overlayVideos []string, 
 	var mu sync.Mutex
 	errorChan := make(chan error, len(overlayVideos))
 
-	log.Printf("Preparing %d overlay videos concurrently with chroma key support", len(overlayVideos))
+	log.Printf("Preparing %d overlay videos concurrently with multi-GPU chroma key support", len(overlayVideos))
 
 	for i, overlayPath := range overlayVideos {
 		wg.Add(1)
@@ -479,7 +520,7 @@ func (ve *VideoEditor) PrepareOverlayVideosConcurrently(overlayVideos []string, 
 			ve.WorkerPool <- struct{}{}
 			defer func() { <-ve.WorkerPool }()
 
-			preparedOverlay, err := ve.PrepareOverlayVideo(path, duration, index)
+			preparedOverlay, err := ve.PrepareOverlayVideoWithGPU(path, duration, index)
 			if err != nil {
 				errorChan <- fmt.Errorf("failed to prepare overlay %d: %v", index, err)
 				return
@@ -510,6 +551,152 @@ func (ve *VideoEditor) PrepareOverlayVideosConcurrently(overlayVideos []string, 
 	}
 
 	return validOverlays, nil
+}
+
+// NEW: PrepareOverlayVideoWithGPU - Multi-GPU aware overlay preparation
+func (ve *VideoEditor) PrepareOverlayVideoWithGPU(overlayPath string, duration float64, index int) (string, error) {
+	outputPath := filepath.Join(ve.OutputDir, fmt.Sprintf("prepared_overlay_%d.mp4", index))
+
+	overlayForFFmpeg := strings.ReplaceAll(overlayPath, "\\", "/")
+	outputForFFmpeg := strings.ReplaceAll(outputPath, "\\", "/")
+
+	originalDuration, err := ve.getVideoDuration(overlayPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to get overlay duration: %v", err)
+	}
+
+	log.Printf("Preparing overlay video %d: %s (original: %.2fs, target: %.2fs)",
+		index, filepath.Base(overlayPath), originalDuration, duration)
+
+	overlayOpacity := 0.7
+	if ve.Config.Settings.OverlayOpacity > 0 {
+		overlayOpacity = ve.Config.Settings.OverlayOpacity
+	}
+
+	chromaConfig := ve.getChromaKeyConfig()
+
+	if chromaConfig.Enabled && chromaConfig.Color == "auto" {
+		detected, detectedColor, err := ve.detectChromaKeyInVideo(overlayPath)
+		if err != nil {
+			log.Printf("Warning: Failed to auto-detect chroma key for %s: %v", overlayPath, err)
+		} else if detected {
+			chromaConfig.Color = detectedColor
+			log.Printf("Auto-detected chroma key color '%s' in overlay %d", detectedColor, index)
+		} else {
+			log.Printf("No chroma key detected in overlay %d, disabling chroma key removal", index)
+			chromaConfig.Enabled = false
+		}
+	}
+
+	if chromaConfig.Enabled {
+		log.Printf("Applying chroma key removal to overlay %d (color: %s, similarity: %.2f)",
+			index, chromaConfig.Color, chromaConfig.Similarity)
+	}
+
+	// Get GPU for this task
+	var gpu GPUDevice
+	if ve.UseMultiGPU {
+		select {
+		case gpu = <-ve.GPUPool:
+			defer func() { ve.GPUPool <- gpu }()
+		default:
+			encoder, encoderArgs := ve.getEncoderSettings()
+			gpu = GPUDevice{
+				Type:    "fallback",
+				Encoder: encoder,
+				Args:    encoderArgs,
+			}
+		}
+	} else {
+		encoder, encoderArgs := ve.getEncoderSettings()
+		gpu = GPUDevice{
+			Type:    "single",
+			Encoder: encoder,
+			Args:    encoderArgs,
+		}
+	}
+
+	log.Printf("Processing overlay %d with %s GPU (%s)", index, gpu.Type, gpu.Encoder)
+
+	videoFilter := ve.createChromaKeyFilter(chromaConfig, ve.Config.Settings.Width, ve.Config.Settings.Height, overlayOpacity)
+
+	if originalDuration >= duration {
+		args := []string{
+			"-y",
+			"-i", overlayForFFmpeg,
+			"-vf", videoFilter,
+			"-t", fmt.Sprintf("%.2f", duration),
+			"-c:v", gpu.Encoder,
+		}
+
+		args = append(args, gpu.Args...)
+
+		// Add GPU-specific device selection
+		if gpu.Type == "intel" {
+			args = append(args, "-init_hw_device", "qsv=hw")
+		} else if gpu.Type == "nvidia" {
+			args = append(args, "-gpu", gpu.Device)
+		}
+
+		args = append(args,
+			"-r", strconv.Itoa(ve.Config.Settings.FPS),
+			"-pix_fmt", "yuva420p",
+			"-an",
+			outputForFFmpeg,
+		)
+
+		cmd := exec.Command("ffmpeg", args...)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			log.Printf("FFmpeg overlay preparation output: %s", string(output))
+			return "", fmt.Errorf("failed to prepare overlay video: %v", err)
+		}
+	} else {
+		loopCount := int(duration/originalDuration) + 1
+
+		args := []string{
+			"-y",
+			"-stream_loop", strconv.Itoa(loopCount),
+			"-i", overlayForFFmpeg,
+			"-vf", videoFilter,
+			"-t", fmt.Sprintf("%.2f", duration),
+			"-c:v", gpu.Encoder,
+		}
+
+		args = append(args, gpu.Args...)
+
+		// Add GPU-specific device selection
+		if gpu.Type == "intel" {
+			args = append(args, "-init_hw_device", "qsv=hw")
+		} else if gpu.Type == "nvidia" {
+			args = append(args, "-gpu", gpu.Device)
+		}
+
+		args = append(args,
+			"-r", strconv.Itoa(ve.Config.Settings.FPS),
+			"-pix_fmt", "yuva420p",
+			"-an",
+			outputForFFmpeg,
+		)
+
+		log.Printf("Looping overlay %d times to reach target duration", loopCount)
+
+		cmd := exec.Command("ffmpeg", args...)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			log.Printf("FFmpeg overlay preparation output: %s", string(output))
+			return "", fmt.Errorf("failed to prepare overlay video: %v", err)
+		}
+	}
+
+	chromaStatus := ""
+	if chromaConfig.Enabled {
+		chromaStatus = fmt.Sprintf(" with %s chroma key removal", chromaConfig.Color)
+	}
+	log.Printf("✓ Overlay video %d prepared successfully with %.0f%% opacity using %s GPU%s",
+		index, overlayOpacity*100, gpu.Type, chromaStatus)
+
+	return outputPath, nil
 }
 
 func (ve *VideoEditor) GenerateFinalVideoWithOverlays() error {
