@@ -1,7 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -24,8 +28,8 @@ func NewScriptService(templateService *TemplateService, geminiService *GeminiSer
 }
 
 // GenerateCompleteScript generates a complete script from start to finish
-func (s *ScriptService) GenerateCompleteScript(config *ScriptConfig) error {
-	session := NewScriptSession(config)
+func (s *ScriptService) GenerateCompleteScript(config *ScriptConfig, scriptID primitive.ObjectID) error {
+	session := NewScriptSession(config, scriptID)
 
 	fmt.Printf("📁 Creating output folder: %s\n", session.OutputFolder)
 	fmt.Printf("📄 Script will be saved to: %s\n", session.ScriptFilename)
@@ -46,6 +50,7 @@ func (s *ScriptService) GenerateCompleteScript(config *ScriptConfig) error {
 		return fmt.Errorf("generating hook and introduction: %w", err)
 	}
 
+	imagePrompts := []ImagePrompt{}
 	// Step 4: Generate all sections
 	for i := 1; i <= config.SectionCount; i++ {
 		session.CurrentStep = i
@@ -54,7 +59,20 @@ func (s *ScriptService) GenerateCompleteScript(config *ScriptConfig) error {
 		if err := s.generateSection(session); err != nil {
 			return fmt.Errorf("generating section %d: %w", i, err)
 		}
+		if config.GenerateVisuals {
+			promptStr, err := s.generateVisualGuidance(session)
+			if err != nil {
+				fmt.Printf("Warning: Error generating visual guidance: %v\n", err)
+				// Continue even if visual guidance fails
+			}
+			prompts, err := ParsePromptsFromFile(promptStr, 1)
+			if err != nil {
+				log.Fatalf("Failed to parse prompts: %v", err)
+			}
 
+			fmt.Printf("Found %d prompts\n", len(prompts))
+			imagePrompts = append(imagePrompts, prompts...)
+		}
 		// Sleep between sections for rate limiting
 		if i < config.SectionCount {
 			fmt.Printf("Sleeping for %v before next section...\n", config.SleepBetweenSections)
@@ -68,14 +86,6 @@ func (s *ScriptService) GenerateCompleteScript(config *ScriptConfig) error {
 		// Continue even if meta tag generation fails
 	}
 
-	// Step 6: Generate visual guidance (if requested)
-	if config.GenerateVisuals {
-		if err := s.generateVisualGuidance(session); err != nil {
-			fmt.Printf("Warning: Error generating visual guidance: %v\n", err)
-			// Continue even if visual guidance fails
-		}
-	}
-
 	// Final save for both files
 	if err := s.saveScriptFile(session); err != nil {
 		return fmt.Errorf("saving script file: %w", err)
@@ -87,6 +97,17 @@ func (s *ScriptService) GenerateCompleteScript(config *ScriptConfig) error {
 		}
 	}
 
+	// Update in database
+	updateData := bson.M{
+		"full_script":   session.Content.String(),
+		"meta_tag":      session.MetaTag,
+		"image_prompts": imagePrompts,
+	}
+
+	// You'll need to pass scriptID to this method
+	if err := s.updateScriptInDB(session.ScriptID, updateData); err != nil {
+		fmt.Printf("Warning: Failed to update outline in DB: %v\n", err)
+	}
 	// Print completion summary
 	fmt.Printf("\n🎉 SCRIPT GENERATION COMPLETED!\n")
 	fmt.Printf("📁 Output folder: %s\n", session.OutputFolder)
@@ -110,13 +131,32 @@ func (s *ScriptService) generateOutline(session *ScriptSession) error {
 	session.Outline = response
 	session.UpdateContext(response, "outline")
 
-	// Initialize file content
-	s.initializeFileContent(session)
+	// Parse outline points
+	session.OutlinePoints = s.outlineParser.ParseOutlinePoints(response)
 
-	// Display outline
+	// Convert to MongoDB format
+	var outlinePoints []OutlinePoint
+	for i, point := range session.OutlinePoints {
+		outlinePoints = append(outlinePoints, OutlinePoint{
+			SectionNumber: i + 1,
+			Title:         point,
+			Description:   "", // Can be enhanced later
+		})
+	}
+
+	// Update in database
+	updateData := bson.M{
+		"outline":        response,
+		"outline_points": outlinePoints,
+	}
+
+	// You'll need to pass scriptID to this method
+	if err := s.updateScriptInDB(session.ScriptID, updateData); err != nil {
+		fmt.Printf("Warning: Failed to update outline in DB: %v\n", err)
+	}
+
 	fmt.Println("OUTLINE GENERATED:")
 	fmt.Println(response)
-
 	return nil
 }
 
@@ -207,13 +247,13 @@ func (s *ScriptService) generateSection(session *ScriptSession) error {
 	return s.saveScriptFile(session)
 }
 
-func (s *ScriptService) generateVisualGuidance(session *ScriptSession) error {
+func (s *ScriptService) generateVisualGuidance(session *ScriptSession) (string, error) {
 	fmt.Println("Generating Visual Guidance...")
 
 	prompt := s.templateService.BuildVisualGuidancePrompt(session)
 	response, err := s.geminiService.GenerateContextAwareContent(session, prompt)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	// Add visual guidance to script content
@@ -224,9 +264,7 @@ func (s *ScriptService) generateVisualGuidance(session *ScriptSession) error {
 	session.Content.WriteString("\n\n\n")
 
 	fmt.Println("VISUAL GUIDANCE GENERATED:")
-	fmt.Println(response)
-
-	return s.saveScriptFile(session)
+	return response, nil
 }
 
 func (s *ScriptService) initializeFileContent(session *ScriptSession) {
@@ -286,4 +324,14 @@ func (s *ScriptService) saveMetaTagFile(session *ScriptSession) error {
 
 	fmt.Printf("🏷️  Meta tags saved to: %s\n", session.MetaTagFilename)
 	return nil
+}
+
+// Add this method to ScriptService
+func (s *ScriptService) updateScriptInDB(scriptID primitive.ObjectID, updateData bson.M) error {
+	_, err := scriptsCollection.UpdateOne(
+		context.Background(),
+		bson.M{"_id": scriptID},
+		bson.M{"$set": updateData},
+	)
+	return err
 }

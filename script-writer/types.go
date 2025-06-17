@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,6 +24,7 @@ type ScriptConfig struct {
 // ScriptSession represents the current state of script generation
 type ScriptSession struct {
 	Config          *ScriptConfig
+	ScriptID        primitive.ObjectID
 	ScriptFilename  string // Path to script file
 	MetaTagFilename string // Path to meta tag file
 	OutputFolder    string // Full folder path
@@ -74,7 +76,7 @@ func NewScriptConfig(topic, channelName, videoTitle string) *ScriptConfig {
 }
 
 // NewScriptSession creates a new script session
-func NewScriptSession(config *ScriptConfig) *ScriptSession {
+func NewScriptSession(config *ScriptConfig, scriptID primitive.ObjectID) *ScriptSession {
 	// Create the full folder path: ChannelName/VideoTitle
 	fullFolderPath := filepath.Join("output-scripts", config.ChannelName, config.OutputFolder)
 
@@ -85,6 +87,7 @@ func NewScriptSession(config *ScriptConfig) *ScriptSession {
 
 	return &ScriptSession{
 		Config:          config,
+		ScriptID:        scriptID,
 		ScriptFilename:  filepath.Join(fullFolderPath, config.OutputFilename),
 		MetaTagFilename: filepath.Join(fullFolderPath, config.MetaTagFilename),
 		OutputFolder:    fullFolderPath,

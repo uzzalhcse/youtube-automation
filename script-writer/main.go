@@ -16,60 +16,6 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// MongoDB Models
-type Channel struct {
-	ID           primitive.ObjectID `bson:"_id,omitempty" json:"id"`
-	ChannelName  string             `bson:"channel_name" json:"channel_name"`
-	CreatedAt    time.Time          `bson:"created_at" json:"created_at"`
-	UpdatedAt    time.Time          `bson:"updated_at" json:"updated_at"`
-	TotalScripts int                `bson:"total_scripts" json:"total_scripts"`
-	Settings     ChannelSettings    `bson:"settings" json:"settings"`
-}
-
-type ChannelSettings struct {
-	DefaultSectionCount     int  `bson:"default_section_count" json:"default_section_count"`
-	PreferredVisualGuidance bool `bson:"preferred_visual_guidance" json:"preferred_visual_guidance"`
-}
-
-type ScriptGeneration struct {
-	ID                primitive.ObjectID `bson:"_id,omitempty" json:"id"`
-	ChannelName       string             `bson:"channel_name" json:"channel_name"`
-	Topic             string             `bson:"topic" json:"topic"`
-	Status            string             `bson:"status" json:"status"` // "pending", "processing", "completed", "failed"
-	GenerateVisuals   bool               `bson:"generate_visuals" json:"generate_visuals"`
-	OutputFolder      string             `bson:"output_folder" json:"output_folder"`
-	OutputFilename    string             `bson:"output_filename" json:"output_filename"`
-	MetaTagFilename   string             `bson:"metatag_filename" json:"metatag_filename"`
-	CreatedAt         time.Time          `bson:"created_at" json:"created_at"`
-	StartedAt         *time.Time         `bson:"started_at,omitempty" json:"started_at,omitempty"`
-	CompletedAt       *time.Time         `bson:"completed_at,omitempty" json:"completed_at,omitempty"`
-	ErrorMessage      string             `bson:"error_message,omitempty" json:"error_message,omitempty"`
-	ProcessingTime    float64            `bson:"processing_time_seconds,omitempty" json:"processing_time_seconds,omitempty"`
-	SectionsGenerated int                `bson:"sections_generated,omitempty" json:"sections_generated,omitempty"`
-	CurrentSection    int                `bson:"current_section,omitempty" json:"current_section,omitempty"`
-}
-
-// API Request/Response structures
-type ScriptRequest struct {
-	Topic           string `json:"topic"`
-	GenerateVisuals bool   `json:"generate_visuals"`
-	ChannelName     string `json:"channel_name"`
-}
-
-type ScriptResponse struct {
-	Success         bool   `json:"success"`
-	ScriptID        string `json:"script_id,omitempty"`
-	Message         string `json:"message,omitempty"`
-	Status          string `json:"status,omitempty"`
-	Topic           string `json:"topic,omitempty"`
-	ChannelName     string `json:"channel_name,omitempty"`
-	OutputFolder    string `json:"output_folder,omitempty"`
-	OutputFilename  string `json:"output_filename,omitempty"`
-	MetaTagFilename string `json:"metatag_filename,omitempty"`
-	GeneratedAt     string `json:"generated_at,omitempty"`
-	Error           string `json:"error,omitempty"`
-}
-
 // Global services and database
 var (
 	templateService    *TemplateService
@@ -104,7 +50,14 @@ func main() {
 	http.HandleFunc("/generate-script", generateScriptHandler)
 	http.HandleFunc("/scripts/", getScriptStatusHandler)
 	http.HandleFunc("/health", healthHandler)
-
+	http.HandleFunc("/channels/", func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		if strings.HasSuffix(path, "/scripts") {
+			getChannelScriptsHandler(w, r)
+		} else {
+			getChannelInfoHandler(w, r)
+		}
+	})
 	// Start server
 	port := getPort()
 	fmt.Printf("=== Wisderly YouTube Script Generator API ===\n")
@@ -156,6 +109,9 @@ func createIndexes() error {
 	// Index for script_generations
 	_, err := scriptsCollection.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{
+			Keys: bson.D{{"channel_id", 1}, {"created_at", -1}},
+		},
+		{
 			Keys: bson.D{{"channel_name", 1}, {"created_at", -1}},
 		},
 		{
@@ -196,6 +152,67 @@ func initializeServices() error {
 	return nil
 }
 
+// Get all scripts for a channel
+func getChannelScriptsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	channelName := strings.TrimPrefix(r.URL.Path, "/channels/")
+	channelName = strings.TrimSuffix(channelName, "/scripts")
+
+	if channelName == "" {
+		respondWithError(w, http.StatusBadRequest, "Channel name is required")
+		return
+	}
+
+	cursor, err := scriptsCollection.Find(
+		context.Background(),
+		bson.M{"channel_name": channelName},
+		options.Find().SetSort(bson.D{{"created_at", -1}}),
+	)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Database error: %v", err))
+		return
+	}
+	defer cursor.Close(context.Background())
+
+	var scripts []ScriptGeneration
+	if err = cursor.All(context.Background(), &scripts); err != nil {
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error decoding scripts: %v", err))
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(scripts)
+}
+
+// Get channel info with script count
+func getChannelInfoHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	channelName := strings.TrimPrefix(r.URL.Path, "/channels/")
+
+	if channelName == "" {
+		respondWithError(w, http.StatusBadRequest, "Channel name is required")
+		return
+	}
+
+	var channel Channel
+	err := channelsCollection.FindOne(context.Background(), bson.M{"channel_name": channelName}).Decode(&channel)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			respondWithError(w, http.StatusNotFound, "Channel not found")
+			return
+		}
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Database error: %v", err))
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(channel)
+}
+
 func generateScriptHandler(w http.ResponseWriter, r *http.Request) {
 	// Set CORS headers
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -231,14 +248,44 @@ func generateScriptHandler(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, http.StatusBadRequest, "Channel name cannot be empty")
 		return
 	}
+	var channel Channel
+	err := channelsCollection.FindOne(context.Background(), bson.M{"channel_name": strings.TrimSpace(req.ChannelName)}).Decode(&channel)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			// Create channel if it doesn't exist
+			newChannel := Channel{
+				ChannelName:  strings.TrimSpace(req.ChannelName),
+				CreatedAt:    time.Now(),
+				UpdatedAt:    time.Now(),
+				TotalScripts: 0,
+				Settings: ChannelSettings{
+					DefaultSectionCount:     defaultSectionCount,
+					PreferredVisualGuidance: false,
+				},
+			}
+			result, err := channelsCollection.InsertOne(context.Background(), newChannel)
+			if err != nil {
+				respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to create channel: %v", err))
+				return
+			}
+			channel.ID = result.InsertedID.(primitive.ObjectID)
+			channel.ChannelName = newChannel.ChannelName
+		} else {
+			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Database error: %v", err))
+			return
+		}
+	}
 
 	// Create script generation record in MongoDB
 	scriptGen := &ScriptGeneration{
+		ChannelID:       channel.ID,
 		ChannelName:     strings.TrimSpace(req.ChannelName),
 		Topic:           strings.TrimSpace(req.Topic),
 		Status:          StatusPending,
 		GenerateVisuals: req.GenerateVisuals,
 		CreatedAt:       time.Now(),
+		OutlinePoints:   []OutlinePoint{},
+		ImagePrompts:    []ImagePrompt{},
 	}
 
 	// Insert into database
@@ -252,7 +299,7 @@ func generateScriptHandler(w http.ResponseWriter, r *http.Request) {
 	scriptGen.ID = scriptID
 
 	// Create script config
-	config, err := createScriptConfig(scriptGen)
+	config, err := createScriptConfig(scriptGen, channel.Settings.DefaultSectionCount)
 	if err != nil {
 		updateScriptStatus(scriptID, StatusFailed, fmt.Sprintf("Error creating config: %v", err))
 		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error creating config: %v", err))
@@ -311,7 +358,7 @@ func processScriptGeneration(scriptID primitive.ObjectID, config *ScriptConfig) 
 	startTime := time.Now()
 
 	// Generate script (same logic as original)
-	err := scriptService.GenerateCompleteScript(config)
+	err := scriptService.GenerateCompleteScript(config, scriptID)
 
 	processingTime := time.Since(startTime).Seconds()
 
@@ -470,16 +517,16 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(health)
 }
 
-func createScriptConfig(scriptGen *ScriptGeneration) (*ScriptConfig, error) {
+func createScriptConfig(scriptGen *ScriptGeneration, sectionCount int) (*ScriptConfig, error) {
 
 	config := &ScriptConfig{
 		Topic:                scriptGen.Topic,
 		GenerateVisuals:      scriptGen.GenerateVisuals,
-		ChannelName:          channelName, // This should be replaced with dynamic channel name
+		ChannelName:          scriptGen.ChannelName, // This should be replaced with dynamic channel name
 		OutputFolder:         sanitizeFilename(scriptGen.Topic),
 		OutputFilename:       fmt.Sprintf("script_%d.txt", time.Now().Unix()),
 		MetaTagFilename:      fmt.Sprintf("metatag_%d.txt", time.Now().Unix()),
-		SectionCount:         defaultSectionCount,
+		SectionCount:         sectionCount,
 		SleepBetweenSections: defaultSleepBetweenSections,
 	}
 
