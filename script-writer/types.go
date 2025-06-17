@@ -55,7 +55,6 @@ const (
 	channelName                 = "Wisderly" // Default channel name
 )
 
-// NewScriptConfig creates a new script configuration with proper file paths
 func NewScriptConfig(topic, channelName, videoTitle string) *ScriptConfig {
 	// Sanitize video title for folder name
 	sanitizedVideoTitle := sanitizeFilename(videoTitle)
