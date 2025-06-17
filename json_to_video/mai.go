@@ -435,65 +435,154 @@ func saveBase64Asset(base64Data, filepath string) error {
 
 func buildFFmpegCommand(jobID string, req *VideoRequest) ([]string, error) {
 	tempDir := filepath.Join("temp", jobID)
-
 	args := []string{}
-
-	// Input sources
-	inputCount := 0
+	videoInputCount := 0
+	audioInputCount := 0
 
 	// Background color/image
 	if req.Background != "" && req.Background[0] == '#' {
 		args = append(args, "-f", "lavfi", "-i",
 			fmt.Sprintf("color=%s:size=%dx%d:duration=%d:rate=25",
 				req.Background, req.Width, req.Height, req.Duration))
-		inputCount++
+		videoInputCount++
 	}
 
-	// Add image inputs
+	// Add image inputs - track only actual image files
+	imageCount := 0
 	for i, img := range req.Images {
 		if img.Data != "" {
-			args = append(args, "-i", filepath.Join(tempDir, fmt.Sprintf("image_%d.png", i)))
-			inputCount++
+			args = append(args, "-loop", "1", "-t", strconv.Itoa(img.Duration),
+				"-i", filepath.Join(tempDir, fmt.Sprintf("image_%d.png", i)))
+			videoInputCount++
+			imageCount++
 		} else if img.URL != "" {
-			args = append(args, "-i", img.URL)
-			inputCount++
+			args = append(args, "-loop", "1", "-t", strconv.Itoa(img.Duration), "-i", img.URL)
+			videoInputCount++
+			imageCount++
 		}
 	}
 
+	// Track where audio inputs start
+	audioStartIndex := videoInputCount
+
 	// Add audio inputs
+	audioInputs := []string{}
 	if req.Audio.BackgroundMusic != "" {
 		args = append(args, "-i", filepath.Join(tempDir, "background.mp3"))
-		inputCount++
+		audioInputs = append(audioInputs, fmt.Sprintf("[%d:a]", audioStartIndex+audioInputCount))
+		audioInputCount++
+	}
+	if req.Audio.BackgroundURL != "" {
+		args = append(args, "-i", req.Audio.BackgroundURL)
+		audioInputs = append(audioInputs, fmt.Sprintf("[%d:a]", audioStartIndex+audioInputCount))
+		audioInputCount++
 	}
 	if req.Audio.VoiceOver != "" {
 		args = append(args, "-i", filepath.Join(tempDir, "voiceover.mp3"))
-		inputCount++
+		audioInputs = append(audioInputs, fmt.Sprintf("[%d:a]", audioStartIndex+audioInputCount))
+		audioInputCount++
+	}
+	if req.Audio.VoiceOverURL != "" {
+		args = append(args, "-i", req.Audio.VoiceOverURL)
+		audioInputs = append(audioInputs, fmt.Sprintf("[%d:a]", audioStartIndex+audioInputCount))
+		audioInputCount++
 	}
 
-	// Build filter complex
-	filterComplex := buildFilterComplex(req, inputCount)
+	// Build complex filter with correct input counts
+	filterComplex := buildFilterComplexWithCounts(req, videoInputCount, audioInputs)
 	if filterComplex != "" {
 		args = append(args, "-filter_complex", filterComplex)
+		args = append(args, "-map", "[v]")
+		if len(audioInputs) > 0 {
+			args = append(args, "-map", "[a]")
+		}
 	}
 
 	// Add subtitle filter if needed
-	if req.Subtitles.SRTData != "" {
-		srtPath := filepath.Join(tempDir, "subtitles.srt")
-		args = append(args, "-vf", fmt.Sprintf("subtitles=%s", srtPath))
+	if req.Subtitles.SRTData != "" || req.Subtitles.SRTURL != "" {
+		srtPath := ""
+		if req.Subtitles.SRTData != "" {
+			srtPath = filepath.Join(tempDir, "subtitles.srt")
+		} else if req.Subtitles.SRTURL != "" {
+			srtPath = req.Subtitles.SRTURL
+		}
+
+		if srtPath != "" {
+			fontSize := req.Subtitles.FontSize
+			if fontSize <= 0 {
+				fontSize = 24
+			}
+			fontColor := req.Subtitles.FontColor
+			if fontColor == "" {
+				fontColor = "white"
+			}
+
+			subtitleFilter := fmt.Sprintf("subtitles=%s:force_style='FontSize=%d,PrimaryColour=&H%s'",
+				strings.ReplaceAll(srtPath, "\\", "/"), fontSize, getFFmpegColor(fontColor))
+
+			if filterComplex == "" {
+				args = append(args, "-vf", subtitleFilter)
+			} else {
+				// Subtitle filter will be included in filter complex
+			}
+		}
 	}
 
 	// Output settings
 	args = append(args, "-c:v", "libx264", "-pix_fmt", "yuv420p")
-	args = append(args, "-c:a", "aac", "-b:a", "128k")
-	args = append(args, "-shortest", "-y")
+	if len(audioInputs) > 0 {
+		args = append(args, "-c:a", "aac", "-b:a", "128k")
+	}
+	args = append(args, "-t", strconv.Itoa(req.Duration), "-y")
 
 	return args, nil
 }
 
-func buildFilterComplex(req *VideoRequest, inputCount int) string {
+func buildFilterComplexWithCounts(req *VideoRequest, videoInputCount int, audioInputs []string) string {
 	var filters []string
 
-	// Add text overlays for scenes
+	// Start with background
+	currentVideo := "[0:v]"
+
+	// Process images with proper scaling and timing
+	videoInputIndex := 1 // Start from 1 (0 is background)
+
+	for _, img := range req.Images {
+		if (img.Data != "" || img.URL != "") && img.Duration > 0 && videoInputIndex < videoInputCount {
+
+			// Check if this should be fullscreen (image dimensions match video dimensions)
+			isFullscreen := (img.Width == req.Width && img.Height == req.Height)
+
+			var scaleFilter string
+			if isFullscreen || (img.X == 0 && img.Y == 0 && img.Width >= req.Width && img.Height >= req.Height) {
+				// For fullscreen images, scale to fill entire screen (may crop)
+				scaleFilter = fmt.Sprintf("[%d:v]scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d[scaled%d]",
+					videoInputIndex, req.Width, req.Height, req.Width, req.Height, videoInputIndex)
+
+				// For fullscreen, overlay at 0,0
+				overlayFilter := fmt.Sprintf("%s[scaled%d]overlay=0:0:enable='between(t,%d,%d)'[v%d]",
+					currentVideo, videoInputIndex, img.StartTime, img.StartTime+img.Duration, videoInputIndex)
+				filters = append(filters, scaleFilter)
+				filters = append(filters, overlayFilter)
+			} else {
+				// For non-fullscreen images, scale to specified dimensions
+				scaleFilter = fmt.Sprintf("[%d:v]scale=%d:%d[scaled%d]",
+					videoInputIndex, img.Width, img.Height, videoInputIndex)
+
+				// Create overlay with specified positioning
+				overlayFilter := fmt.Sprintf("%s[scaled%d]overlay=%d:%d:enable='between(t,%d,%d)'[v%d]",
+					currentVideo, videoInputIndex, img.X, img.Y, img.StartTime, img.StartTime+img.Duration, videoInputIndex)
+				filters = append(filters, scaleFilter)
+				filters = append(filters, overlayFilter)
+			}
+
+			currentVideo = fmt.Sprintf("[v%d]", videoInputIndex)
+			videoInputIndex++
+		}
+	}
+
+	// Process text overlays for scenes
+	sceneIndex := 0
 	for _, scene := range req.Scenes {
 		if scene.Text == "" {
 			continue
@@ -511,28 +600,43 @@ func buildFilterComplex(req *VideoRequest, inputCount int) string {
 
 		x, y := getTextPosition(scene.Position, req.Width, req.Height, scene.X, scene.Y)
 
-		textFilter := fmt.Sprintf("drawtext=text='%s':fontsize=%d:fontcolor=%s:x=%s:y=%s:enable='between(t,%d,%d)'",
+		textFilter := fmt.Sprintf("%sdrawtext=text='%s':fontsize=%d:fontcolor=%s:x=%s:y=%s:enable='between(t,%d,%d)'[vt%d]",
+			currentVideo,
 			strings.ReplaceAll(scene.Text, "'", "\\'"),
 			fontSize, fontColor, x, y,
-			scene.StartTime, scene.StartTime+scene.Duration)
+			scene.StartTime, scene.StartTime+scene.Duration, sceneIndex)
 
 		filters = append(filters, textFilter)
+		currentVideo = fmt.Sprintf("[vt%d]", sceneIndex)
+		sceneIndex++
 	}
 
-	// Add image overlays
-	for _, img := range req.Images {
-		if img.StartTime >= 0 && img.Duration > 0 {
-			overlay := fmt.Sprintf("overlay=%d:%d:enable='between(t,%d,%d)'",
-				img.X, img.Y, img.StartTime, img.StartTime+img.Duration)
-			filters = append(filters, overlay)
+	// Final video output
+	if len(filters) > 0 {
+		filters[len(filters)-1] = strings.Replace(filters[len(filters)-1], currentVideo, "[v]", 1)
+	} else {
+		filters = append(filters, "[0:v]copy[v]")
+	}
+
+	// Handle audio mixing
+	if len(audioInputs) > 0 {
+		if len(audioInputs) == 1 {
+			// Single audio input
+			audioFilter := fmt.Sprintf("%samix=inputs=1[a]", audioInputs[0])
+			filters = append(filters, audioFilter)
+		} else {
+			// Multiple audio inputs - mix them
+			audioFilter := fmt.Sprintf("%samix=inputs=%d[a]", strings.Join(audioInputs, ""), len(audioInputs))
+			filters = append(filters, audioFilter)
 		}
 	}
 
-	return strings.Join(filters, ",")
+	return strings.Join(filters, ";")
 }
-
 func executeFFmpegCommand(args []string, outputPath string) error {
 	args = append(args, outputPath)
+
+	fmt.Printf("Executing FFmpeg command: ffmpeg %s\n", strings.Join(args, " "))
 
 	cmd := exec.Command("ffmpeg", args...)
 	output, err := cmd.CombinedOutput()
@@ -558,6 +662,29 @@ func getTextPosition(position string, width, height, customX, customY int) (stri
 		fallthrough
 	default:
 		return "(w-text_w)/2", "(h-text_h)/2"
+	}
+}
+
+func getFFmpegColor(color string) string {
+	// Convert color names to FFmpeg hex format
+	switch strings.ToLower(color) {
+	case "white":
+		return "ffffff"
+	case "black":
+		return "000000"
+	case "red":
+		return "ff0000"
+	case "green":
+		return "00ff00"
+	case "blue":
+		return "0000ff"
+	case "yellow":
+		return "ffff00"
+	default:
+		if strings.HasPrefix(color, "#") && len(color) == 7 {
+			return color[1:] // Remove # prefix
+		}
+		return "ffffff" // Default to white
 	}
 }
 
