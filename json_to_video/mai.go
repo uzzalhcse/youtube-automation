@@ -490,15 +490,8 @@ func buildFFmpegCommand(jobID string, req *VideoRequest) ([]string, error) {
 
 	// Build complex filter with correct input counts
 	filterComplex := buildFilterComplexWithCounts(req, videoInputCount, audioInputs)
-	if filterComplex != "" {
-		args = append(args, "-filter_complex", filterComplex)
-		args = append(args, "-map", "[v]")
-		if len(audioInputs) > 0 {
-			args = append(args, "-map", "[a]")
-		}
-	}
 
-	// Add subtitle filter if needed
+	// Add subtitles to the filter complex if needed
 	if req.Subtitles.SRTData != "" || req.Subtitles.SRTURL != "" {
 		srtPath := ""
 		if req.Subtitles.SRTData != "" {
@@ -508,23 +501,15 @@ func buildFFmpegCommand(jobID string, req *VideoRequest) ([]string, error) {
 		}
 
 		if srtPath != "" {
-			fontSize := req.Subtitles.FontSize
-			if fontSize <= 0 {
-				fontSize = 24
-			}
-			fontColor := req.Subtitles.FontColor
-			if fontColor == "" {
-				fontColor = "white"
-			}
+			filterComplex = addSubtitlesToFilterComplex(filterComplex, srtPath, req.Subtitles)
+		}
+	}
 
-			subtitleFilter := fmt.Sprintf("subtitles=%s:force_style='FontSize=%d,PrimaryColour=&H%s'",
-				strings.ReplaceAll(srtPath, "\\", "/"), fontSize, getFFmpegColor(fontColor))
-
-			if filterComplex == "" {
-				args = append(args, "-vf", subtitleFilter)
-			} else {
-				// Subtitle filter will be included in filter complex
-			}
+	if filterComplex != "" {
+		args = append(args, "-filter_complex", filterComplex)
+		args = append(args, "-map", "[v]")
+		if len(audioInputs) > 0 {
+			args = append(args, "-map", "[a]")
 		}
 	}
 
@@ -611,13 +596,6 @@ func buildFilterComplexWithCounts(req *VideoRequest, videoInputCount int, audioI
 		sceneIndex++
 	}
 
-	// Final video output
-	if len(filters) > 0 {
-		filters[len(filters)-1] = strings.Replace(filters[len(filters)-1], currentVideo, "[v]", 1)
-	} else {
-		filters = append(filters, "[0:v]copy[v]")
-	}
-
 	// Handle audio mixing
 	if len(audioInputs) > 0 {
 		if len(audioInputs) == 1 {
@@ -631,8 +609,110 @@ func buildFilterComplexWithCounts(req *VideoRequest, videoInputCount int, audioI
 		}
 	}
 
+	// The video output will be handled by addSubtitlesToFilterComplex if subtitles are present
+	// Otherwise, we need to set the final video output here
 	return strings.Join(filters, ";")
 }
+
+func addSubtitlesToFilterComplex(filterComplex, srtPath string, subtitles SubtitleConfig) string {
+	// Ensure we have a proper filter complex base
+	if filterComplex == "" {
+		filterComplex = "[0:v]copy[v_pre]"
+	} else {
+		// Replace the last video output tag to prepare for subtitles
+		filterComplex = strings.ReplaceAll(filterComplex, "[v]", "[v_pre]")
+		filterComplex = strings.ReplaceAll(filterComplex, "[vt", "[v_pre];[v_pre]drawtext=text='':fontsize=1[vt")
+
+		// Find the last video filter and rename its output
+		parts := strings.Split(filterComplex, ";")
+		if len(parts) > 0 {
+			lastPart := parts[len(parts)-1]
+			// If it's an audio filter, don't modify it
+			if !strings.Contains(lastPart, "[a]") {
+				// Find the last bracket and replace it
+				lastBracketIndex := strings.LastIndex(lastPart, "]")
+				if lastBracketIndex > 0 {
+					parts[len(parts)-1] = lastPart[:lastBracketIndex] + "_pre]"
+				}
+			}
+		}
+		filterComplex = strings.Join(parts, ";")
+	}
+
+	// Build subtitle filter
+	fontSize := subtitles.FontSize
+	if fontSize <= 0 {
+		fontSize = 24
+	}
+
+	fontColor := subtitles.FontColor
+	if fontColor == "" {
+		fontColor = "white"
+	}
+
+	// Convert Windows path separators for FFmpeg
+	srtPath = strings.ReplaceAll(srtPath, "\\", "/")
+
+	// Escape the path for FFmpeg
+	srtPath = strings.ReplaceAll(srtPath, ":", "\\:")
+
+	// Build subtitle style
+	style := fmt.Sprintf("FontSize=%d,PrimaryColour=&H%s", fontSize, getFFmpegColorHex(fontColor))
+
+	if subtitles.Outline {
+		style += ",OutlineColour=&H000000,Outline=2"
+	}
+
+	if subtitles.Background != "" && subtitles.Background != "transparent" {
+		style += fmt.Sprintf(",BackColour=&H%s", getFFmpegColorHex(subtitles.Background))
+	}
+
+	// Position alignment
+	alignment := "2" // bottom center
+	switch strings.ToLower(subtitles.Position) {
+	case "top":
+		alignment = "8" // top center
+	case "center":
+		alignment = "5" // middle center
+	case "bottom":
+		alignment = "2" // bottom center
+	default:
+		alignment = "2" // default to bottom
+	}
+	style += fmt.Sprintf(",Alignment=%s", alignment)
+
+	// Find the last video stream name
+	lastVideoStream := "[v_pre]"
+	if strings.Contains(filterComplex, "[vt") {
+		// Find the highest numbered vt stream
+		maxVt := -1
+		parts := strings.Split(filterComplex, "[vt")
+		for _, part := range parts[1:] {
+			endIndex := strings.Index(part, "]")
+			if endIndex > 0 {
+				numStr := part[:endIndex]
+				if num, err := strconv.Atoi(numStr); err == nil && num > maxVt {
+					maxVt = num
+				}
+			}
+		}
+		if maxVt >= 0 {
+			lastVideoStream = fmt.Sprintf("[vt%d]", maxVt)
+		}
+	}
+
+	// Add subtitle filter
+	subtitleFilter := fmt.Sprintf("%ssubtitles=%s:force_style='%s'[v]", lastVideoStream, srtPath, style)
+
+	if filterComplex != "" {
+		filterComplex += ";" + subtitleFilter
+	} else {
+		filterComplex = subtitleFilter
+	}
+
+	return filterComplex
+}
+
 func executeFFmpegCommand(args []string, outputPath string) error {
 	args = append(args, outputPath)
 
@@ -666,6 +746,28 @@ func getTextPosition(position string, width, height, customX, customY int) (stri
 }
 
 func getFFmpegColor(color string) string {
+	// Convert color names to FFmpeg hex format
+	switch strings.ToLower(color) {
+	case "white":
+		return "ffffff"
+	case "black":
+		return "000000"
+	case "red":
+		return "ff0000"
+	case "green":
+		return "00ff00"
+	case "blue":
+		return "0000ff"
+	case "yellow":
+		return "ffff00"
+	default:
+		if strings.HasPrefix(color, "#") && len(color) == 7 {
+			return color[1:] // Remove # prefix
+		}
+		return "ffffff" // Default to white
+	}
+}
+func getFFmpegColorHex(color string) string {
 	// Convert color names to FFmpeg hex format
 	switch strings.ToLower(color) {
 	case "white":
