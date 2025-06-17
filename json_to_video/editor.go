@@ -169,6 +169,7 @@ func generateVideo(jobID string, req *VideoRequest) {
 	if err := executeFFmpegCommand(ffmpegArgs, outputPath); err != nil {
 		job.Status = "failed"
 		job.Error = err.Error()
+		fmt.Println("❌ Job failed:", job.Error)
 		return
 	}
 	job.Progress = 90
