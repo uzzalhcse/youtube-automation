@@ -1,0 +1,70 @@
+services:
+  # Model downloader service
+  model-downloader:
+    image: alpine/curl:latest
+    container_name: whisper-model-downloader
+    volumes:
+      - ./models:/models
+    profiles:
+      - download
+    command: >
+      sh -c "
+        cd /models &&
+        echo 'Downloading whisper base model...' &&
+        curl -L --progress-bar -o ggml-base.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin &&
+        echo 'Verifying download...' &&
+        if [ -f ggml-base.bin ] && [ -s ggml-base.bin ]; then
+          echo 'Model downloaded successfully'
+          ls -la ggml-base.bin
+        else
+          echo 'Download failed - file is empty or missing'
+          exit 1
+        fi
+      "
+
+  # Main API service (CPU)
+  whisper-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: whisper-api
+    ports:
+      - "8086:8086"
+    volumes:
+      - ./models:/models:ro
+      - ./uploads:/tmp/uploads
+    environment:
+      - PORT=8086
+      - GIN_MODE=release
+    profiles:
+      - api
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8086/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+
+  # Nginx reverse proxy (optional)
+  nginx:
+    image: nginx:alpine
+    container_name: whisper-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/ssl:ro
+    depends_on:
+      - whisper-api
+    profiles:
+      - proxy
+    restart: unless-stopped
+
+volumes:
+  models:
+    driver: local
+  uploads:
+    driver: local
