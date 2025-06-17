@@ -124,6 +124,7 @@ func getJobStatusHandler(w http.ResponseWriter, r *http.Request) {
 
 	if job.Status == "failed" {
 		response.Message = job.Error
+		fmt.Println("❌ Job failed:", job.Error)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

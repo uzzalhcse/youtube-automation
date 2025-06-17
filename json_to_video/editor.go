@@ -187,6 +187,18 @@ func buildFFmpegCommand(jobID string, req *VideoRequest) ([]string, error) {
 	videoInputCount := 0
 	audioInputCount := 0
 
+	// Detect GPU first
+	hasGPU, encoderArgs := detectGPUAcceleration()
+
+	// Add hardware acceleration at the beginning if available
+	if hasGPU && len(encoderArgs) >= 2 && encoderArgs[0] == "-hwaccel" {
+		args = append(args, "-hwaccel", encoderArgs[1])
+		if encoderArgs[1] == "qsv" {
+			args = append(args, "-hwaccel_output_format", "qsv")
+		}
+		fmt.Println("Using GPU acceleration with args:", encoderArgs)
+	}
+
 	// Background color/image
 	if req.Background != "" && req.Background[0] == '#' {
 		args = append(args, "-f", "lavfi", "-i",
@@ -261,8 +273,19 @@ func buildFFmpegCommand(jobID string, req *VideoRequest) ([]string, error) {
 		}
 	}
 
-	// Output settings
-	args = append(args, "-c:v", "libx264", "-pix_fmt", "yuv420p")
+	// Output settings with GPU/CPU detection
+	if hasGPU {
+		if len(encoderArgs) >= 2 && encoderArgs[1] == "h264_qsv" {
+			args = append(args, "-c:v", "h264_qsv", "-preset", "medium", "-global_quality", "23")
+		} else if len(encoderArgs) >= 2 && encoderArgs[1] == "h264_vaapi" {
+			args = append(args, "-c:v", "h264_vaapi", "-qp", "23")
+		}
+	} else {
+		args = append(args, "-c:v", "libx264", "-preset", "medium", "-crf", "23")
+	}
+
+	args = append(args, "-pix_fmt", "yuv420p")
+
 	if len(audioInputs) > 0 {
 		args = append(args, "-c:a", "aac", "-b:a", "128k")
 	}

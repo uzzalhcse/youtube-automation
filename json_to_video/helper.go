@@ -1,5 +1,7 @@
 package main
 
+import "os/exec"
+
 // Helper function to create Ken Burns presets
 func CreateKenBurnsPreset(preset string, duration int) KenBurnsConfig {
 	switch preset {
@@ -60,4 +62,19 @@ func CreateKenBurnsPreset(preset string, duration int) KenBurnsConfig {
 			ScaleWidth: 8000,
 		}
 	}
+}
+func detectGPUAcceleration() (bool, []string) {
+	// Try Intel QSV first (since you have Intel Iris Xe)
+	cmd := exec.Command("ffmpeg", "-hide_banner", "-hwaccel", "qsv", "-hwaccel_output_format", "qsv", "-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=1", "-c:v", "h264_qsv", "-f", "null", "-")
+	if err := cmd.Run(); err == nil {
+		return true, []string{"-hwaccel", "qsv"}
+	}
+
+	// Try VAAPI as fallback for Intel
+	cmd = exec.Command("ffmpeg", "-hide_banner", "-hwaccel", "vaapi", "-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=1", "-c:v", "h264_vaapi", "-f", "null", "-")
+	if err := cmd.Run(); err == nil {
+		return true, []string{"-hwaccel", "vaapi"}
+	}
+
+	return false, []string{} // CPU fallback
 }
