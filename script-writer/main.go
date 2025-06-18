@@ -26,6 +26,7 @@ var (
 	channelsCollection     *mongo.Collection
 	scriptsCollection      *mongo.Collection
 	scriptChunksCollection *mongo.Collection
+	chunkVisualsCollection *mongo.Collection
 )
 
 const (
@@ -99,6 +100,7 @@ func initializeMongoDB() error {
 	channelsCollection = database.Collection("channels")
 	scriptsCollection = database.Collection("script_generations")
 	scriptChunksCollection = database.Collection("script_chunks")
+	chunkVisualsCollection = database.Collection("chunk_visuals") // ADD THIS LINE
 
 	// Create indexes
 	if err := createIndexes(); err != nil {

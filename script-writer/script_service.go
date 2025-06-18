@@ -351,12 +351,15 @@ func (s *ScriptService) saveScriptChunks(scriptID primitive.ObjectID, fullScript
 
 	// Prepare chunk documents for batch insert
 	var chunkDocs []interface{}
+	var savedChunks []ScriptChunk
+
 	for i, chunk := range chunks {
 		chunkDoc := ScriptChunk{
 			ScriptID:   scriptID,
 			ChunkIndex: i + 1,
 			Content:    chunk,
 			CharCount:  len(chunk),
+			HasVisual:  false,
 			CreatedAt:  time.Now(),
 		}
 		chunkDocs = append(chunkDocs, chunkDoc)
@@ -364,12 +367,26 @@ func (s *ScriptService) saveScriptChunks(scriptID primitive.ObjectID, fullScript
 
 	// Insert all chunks in batch
 	if len(chunkDocs) > 0 {
-		_, err := scriptChunksCollection.InsertMany(context.Background(), chunkDocs)
+		result, err := scriptChunksCollection.InsertMany(context.Background(), chunkDocs)
 		if err != nil {
 			return fmt.Errorf("failed to save script chunks: %w", err)
 		}
 
+		// Prepare saved chunks with IDs for visual generation
+		for i, insertedID := range result.InsertedIDs {
+			chunk := chunkDocs[i].(ScriptChunk)
+			chunk.ID = insertedID.(primitive.ObjectID)
+			savedChunks = append(savedChunks, chunk)
+		}
+
 		fmt.Printf("✓ Saved %d script chunks to database\n", len(chunkDocs))
+
+		// Generate visuals for all chunks
+		go func() {
+			if err := s.generateVisualsForChunks(scriptID, savedChunks); err != nil {
+				fmt.Printf("Warning: Failed to generate visuals for chunks: %v\n", err)
+			}
+		}()
 	}
 
 	return nil
