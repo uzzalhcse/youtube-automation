@@ -52,7 +52,6 @@ func (t *TemplateService) loadTemplate(filename string) (string, error) {
 	return string(data), nil
 }
 
-// GetOutlineTemplate returns the outline template with topic substitution
 func (t *TemplateService) GetOutlineTemplate(topic string) string {
 	return strings.Replace(t.outlineTemplate, "[TOPIC]", topic, -1)
 }
@@ -67,8 +66,7 @@ func (t *TemplateService) GetHookIntroTemplate() string {
 	return t.hookIntroTemplate
 }
 
-// BuildOutlinePrompt creates a context-aware outline prompt
-func (t *TemplateService) BuildOutlinePrompt(topic string) string {
+func (t *TemplateService) BuildOutlinePrompt(topic string, sectionCount int) string {
 	template := t.GetOutlineTemplate(topic)
 
 	return fmt.Sprintf(`%s
@@ -81,10 +79,9 @@ IMPORTANT REQUIREMENTS:
 Topic: %s
 
 Please provide the outline following the template specifications exactly.`,
-		template, defaultSectionCount, topic)
+		template, sectionCount, topic)
 }
 
-// BuildHookIntroPrompt creates a context-aware hook and introduction prompt
 func (t *TemplateService) BuildHookIntroPrompt(session *ScriptSession) string {
 	return fmt.Sprintf(`%s
 
@@ -93,7 +90,7 @@ CONTEXT:
 - Topic: %s
 
 REQUIREMENTS:
-**Hook & Introduction (200 words):**
+**Hook & Introduction (%d words):**
  - Start with a relatable scenario, question, concern, or statement to hook the audience (e.g., 'Have you ever felt like your energy is fading faster than it used to?', "Tired of waking up with painful leg cramps?").  
  - Briefly introduce the topic and explain why it’s important for seniors.  
  - Mention what the video will cover (e.g., 'In this video, we’ll go over 5 simple habits to boost your energy and feel younger than ever!').  
@@ -102,7 +99,7 @@ REQUIREMENTS:
  - Maintain consistency with the hook's tone.
 
 Please write the section now, Without labeled like "Hook & Introduction:" Just continue.`,
-		t.GetHookIntroTemplate(), session.Outline, session.Config.Topic)
+		t.GetHookIntroTemplate(), session.Outline, session.Config.Topic, session.Config.channel.Settings.WordLimitForHookIntro)
 }
 
 // BuildMetaTagPrompt creates a description,tags and thumbnail statement prompt
@@ -159,7 +156,7 @@ func (t *TemplateService) BuildSectionPrompt(session *ScriptSession, sectionNumb
 CURRENT OUTLINE POINT: %s
 
 REQUIREMENTS:
-- Write exactly 1000-1100 words.
+- Write approx %d words.
 - Copy Paste Ready for voiceover script like ElevenLabs or other AI voice generators.
 - Dont Start with any Section heading.
 - Dont not include any visual guidance or image descriptions.
@@ -173,13 +170,12 @@ REQUIREMENTS:
 - Treat the outline as a contract—every bullet’s promise must be fulfilled in its matching section.
 
 Generate Section %d now, focusing on: %s`,
-		sectionNumber, outlinePoint, outlinePoint, sectionNumber, outlinePoint)
+		sectionNumber, outlinePoint, session.Config.channel.Settings.WordLimitForHookIntro, outlinePoint, sectionNumber, outlinePoint)
 
 	return basePrompt
 }
 
-// BuildVisualGuidancePrompt creates a visual guidance prompt
-func (t *TemplateService) BuildVisualGuidancePrompt(session *ScriptSession) string {
+func (t *TemplateService) BuildVisualGuidancePrompt(session *ScriptSession, sectionCount int) string {
 	return fmt.Sprintf(`VISUAL GUIDANCE GENERATION
 
 Based on the complete script content for topic: %s
@@ -203,5 +199,5 @@ VISUAL STYLE GUIDELINES:
 - Clear, readable text elements when needed.
 
 Please provide visual guidance following this exact format."`,
-		session.Config.Topic, visualImageMultiplier, visualImageMultiplier, defaultSectionCount, defaultSectionCount*visualImageMultiplier)
+		session.Config.Topic, visualImageMultiplier, visualImageMultiplier, sectionCount, sectionCount*visualImageMultiplier)
 }

@@ -10,30 +10,30 @@ import (
 	"time"
 )
 
-func (s *ScriptService) generateVisualsForChunks(scriptID primitive.ObjectID, chunks []ScriptChunk) error {
+func (yt *YtAutomation) generateVisualsForChunks(scriptID primitive.ObjectID, chunks []ScriptAudio) error {
 	fmt.Printf("🎨 Starting visual generation for %d chunks...\n", len(chunks))
 
 	for i, chunk := range chunks {
 		fmt.Printf("Generating visual for chunk %d/%d...\n", i+1, len(chunks))
 
 		// Create SRT-like format for this chunk
-		srtContent := s.createSRTFromChunk(chunk, i)
+		srtContent := yt.createSRTFromChunk(chunk, i)
 
 		// Generate visual prompt using Gemini
-		visualPrompts, err := s.generateVisualPrompts(srtContent)
+		visualPrompts, err := yt.generateVisualPrompts(srtContent)
 		if err != nil {
 			fmt.Printf("Warning: Failed to generate visual for chunk %d: %v\n", chunk.ChunkIndex, err)
 			continue
 		}
 
 		// Save visual prompts to database
-		if err := s.saveChunkVisuals(scriptID, chunk, visualPrompts); err != nil {
+		if err := yt.saveChunkVisuals(scriptID, chunk, visualPrompts); err != nil {
 			fmt.Printf("Warning: Failed to save visuals for chunk %d: %v\n", chunk.ChunkIndex, err)
 			continue
 		}
 
 		// Update chunk to mark it has visual
-		s.updateChunkVisualStatus(chunk.ID, true)
+		yt.updateChunkVisualStatus(chunk.ID, true)
 
 		// Small delay between API calls
 		time.Sleep(1 * time.Second)
@@ -43,7 +43,7 @@ func (s *ScriptService) generateVisualsForChunks(scriptID primitive.ObjectID, ch
 	return nil
 }
 
-func (s *ScriptService) createSRTFromChunk(chunk ScriptChunk, index int) string {
+func (yt *YtAutomation) createSRTFromChunk(chunk ScriptAudio, index int) string {
 	// Create a simple SRT format for the chunk
 	// Estimate timing based on chunk length (average reading speed)
 	wordsCount := len(strings.Fields(chunk.Content))
@@ -56,7 +56,7 @@ func (s *ScriptService) createSRTFromChunk(chunk ScriptChunk, index int) string 
 		index+1, startTime, endTime, chunk.Content)
 }
 
-func (s *ScriptService) generateVisualPrompts(srtContent string) ([]VisualPromptResponse, error) {
+func (yt *YtAutomation) generateVisualPrompts(srtContent string) ([]VisualPromptResponse, error) {
 	masterPrompt := `You are a visual narration mapping assistant.
 I will give you .srt subtitle data. Your job is to output a dense series of visual prompts that match each key beat of the spoken narration.
 
@@ -91,7 +91,7 @@ A JSON array like this:
 Now here is the .srt file:
 ` + srtContent
 
-	response, err := s.geminiService.GenerateContent(masterPrompt)
+	response, err := yt.geminiService.GenerateContent(masterPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate visual prompts: %w", err)
 	}
@@ -117,7 +117,7 @@ Now here is the .srt file:
 
 	return visualPrompts, nil
 }
-func (s *ScriptService) saveChunkVisuals(scriptID primitive.ObjectID, chunk ScriptChunk, visualPrompts []VisualPromptResponse) error {
+func (yt *YtAutomation) saveChunkVisuals(scriptID primitive.ObjectID, chunk ScriptAudio, visualPrompts []VisualPromptResponse) error {
 	// Check if collection is initialized
 	if chunkVisualsCollection == nil {
 		return fmt.Errorf("chunk visuals collection is not initialized")
@@ -146,7 +146,7 @@ func (s *ScriptService) saveChunkVisuals(scriptID primitive.ObjectID, chunk Scri
 
 	return nil
 }
-func (s *ScriptService) updateChunkVisualStatus(chunkID primitive.ObjectID, hasVisual bool) {
+func (yt *YtAutomation) updateChunkVisualStatus(chunkID primitive.ObjectID, hasVisual bool) {
 	_, err := scriptChunksCollection.UpdateOne(
 		context.Background(),
 		bson.M{"_id": chunkID},
@@ -157,7 +157,7 @@ func (s *ScriptService) updateChunkVisualStatus(chunkID primitive.ObjectID, hasV
 	}
 }
 
-func (s *ScriptService) extractEmotion(prompt string) string {
+func (yt *YtAutomation) extractEmotion(prompt string) string {
 	// Simple extraction - look for "Mood: " pattern
 	if idx := strings.Index(prompt, "Mood: "); idx != -1 {
 		emotion := prompt[idx+6:]
@@ -169,7 +169,7 @@ func (s *ScriptService) extractEmotion(prompt string) string {
 	return "neutral"
 }
 
-func (s *ScriptService) extractSceneConcept(prompt string) string {
+func (yt *YtAutomation) extractSceneConcept(prompt string) string {
 	// Simple extraction - look for "Scene: " pattern
 	if idx := strings.Index(prompt, "Scene: "); idx != -1 {
 		scene := prompt[idx+7:]

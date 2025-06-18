@@ -1,4 +1,4 @@
-package main
+package elevenlabs
 
 import (
 	"bufio"
@@ -98,6 +98,8 @@ func (c *ElevenLabsClient) TextToSpeech(text, voiceID string) ([]byte, error) {
 	req.Header.Set("Accept", "audio/mpeg")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("xi-api-key", c.APIKey)
+
+	fmt.Println("========APIKey", c.APIKey)
 
 	// Make request
 	resp, err := c.Client.Do(req)

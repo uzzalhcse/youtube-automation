@@ -17,6 +17,9 @@ type Channel struct {
 type ChannelSettings struct {
 	DefaultSectionCount     int  `bson:"default_section_count" json:"default_section_count"`
 	PreferredVisualGuidance bool `bson:"preferred_visual_guidance" json:"preferred_visual_guidance"`
+	WordLimitForHookIntro   int  `bson:"word_limit_for_hook_intro" json:"word_limit_for_hook_intro"`
+	VisualImageMultiplier   int  `bson:"visual_image_multiplier" json:"visual_image_multiplier"`
+	WordLimitPerSection     int  `bson:"word_limit_per_section" json:"word_limit_per_section"`
 }
 
 type OutlinePoint struct {
@@ -31,7 +34,7 @@ type ImagePrompt struct {
 	ImageType     string `bson:"image_type" json:"image_type"` // "thumbnail", "section", "visual_aid"
 }
 
-type ScriptGeneration struct {
+type Script struct {
 	ID              primitive.ObjectID `bson:"_id,omitempty" json:"id"`
 	ChannelID       primitive.ObjectID `bson:"channel_id" json:"channel_id"` // Reference to Channel
 	ChannelName     string             `bson:"channel_name" json:"channel_name"`
@@ -44,7 +47,7 @@ type ScriptGeneration struct {
 	OutlinePoints []OutlinePoint `bson:"outline_points" json:"outline_points"`
 	FullScript    string         `bson:"full_script" json:"full_script"`
 	MetaTag       string         `bson:"meta_tag" json:"meta_tag"`
-	ImagePrompts  []ImagePrompt  `bson:"image_prompts" json:"image_prompts"`
+	SRT           string         `bson:"srt" json:"srt"` // SRT content for subtitles
 
 	// Keep file references for backward compatibility (optional)
 	OutputFolder    string `bson:"output_folder,omitempty" json:"output_folder,omitempty"`
@@ -81,13 +84,14 @@ type ScriptResponse struct {
 	Error           string `json:"error,omitempty"`
 }
 
-type ScriptChunk struct {
+type ScriptAudio struct {
 	ID         primitive.ObjectID `bson:"_id,omitempty" json:"id"`
 	ScriptID   primitive.ObjectID `bson:"script_id" json:"script_id"`
 	ChunkIndex int                `bson:"chunk_index" json:"chunk_index"`
 	Content    string             `bson:"content" json:"content"`
 	CharCount  int                `bson:"char_count" json:"char_count"`
-	HasVisual  bool               `bson:"has_visual" json:"has_visual"`
+	HasVisual  bool               `bson:"has_visual" json:"has_visual"`                     // need to remove or mode main script collection
+	AudioFile  string             `bson:"audio_file,omitempty" json:"audio_file,omitempty"` // Optional audio file reference
 	CreatedAt  time.Time          `bson:"created_at" json:"created_at"`
 }
 type ChunkVisual struct {

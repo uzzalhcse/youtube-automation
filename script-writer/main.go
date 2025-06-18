@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
 	"time"
+	"youtube_automation/elevenlabs"
 
+	"github.com/joho/godotenv"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -20,8 +23,6 @@ import (
 var (
 	templateService        *TemplateService
 	geminiService          *GeminiService
-	scriptService          *ScriptService
-	mongoClient            *mongo.Client
 	database               *mongo.Database
 	channelsCollection     *mongo.Collection
 	scriptsCollection      *mongo.Collection
@@ -36,29 +37,69 @@ const (
 	StatusFailed     = "failed"
 )
 
+type YtAutomation struct {
+	mongoClient      *mongo.Client
+	templateService  *TemplateService
+	geminiService    *GeminiService
+	outlineParser    *OutlineParser
+	elevenLabsClient *elevenlabs.ElevenLabsClient
+	client           *http.Client
+}
+
+func NewYtAutomation(mongoClient *mongo.Client, templateService *TemplateService, geminiService *GeminiService) *YtAutomation {
+	return &YtAutomation{
+		mongoClient:     mongoClient,
+		templateService: templateService,
+		geminiService:   geminiService,
+		outlineParser:   NewOutlineParser(),
+		elevenLabsClient: elevenlabs.NewElevenLabsClient(os.Getenv("ELEVENLABS_API_KEY"), &elevenlabs.Proxy{
+			Server:   os.Getenv("PROXY_SERVER"),
+			Username: os.Getenv("PROXY_USERNAME"),
+			Password: os.Getenv("PROXY_PASSWORD"),
+		}),
+		client: &http.Client{Timeout: timeout},
+	}
+}
 func main() {
+	// Load environment variables
+	err := LoadEnvironmentVariables()
+	if err != nil {
+		// Use fmt.Printf since logger is not set up yet
+		fmt.Printf("Failed to load environment variables: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Initialize services (same as original logic)
+	templateService = NewTemplateService()
+	geminiService = NewGeminiService(os.Getenv("GEMINI_API_KEY"))
+
 	// Initialize MongoDB connection
-	if err := initializeMongoDB(); err != nil {
+	mClient, err := initializeMongoDB()
+	if err != nil {
 		log.Fatalf("Failed to initialize MongoDB: %v", err)
 	}
-	defer mongoClient.Disconnect(context.Background())
 
-	// Initialize services
-	if err := initializeServices(); err != nil {
-		log.Fatalf("Failed to initialize services: %v", err)
+	yt := NewYtAutomation(mClient, templateService, geminiService)
+
+	defer yt.mongoClient.Disconnect(context.Background())
+	// Load templates
+	if err := templateService.LoadAllTemplates(); err != nil {
+		log.Fatalf("error loading templates: %v", err)
 	}
-
 	// Setup HTTP routes
-	http.HandleFunc("/generate-script", generateScriptHandler)
-	http.HandleFunc("/scripts/", getScriptStatusHandler)
-	http.HandleFunc("/scripts-chunks/", getScriptChunksHandler)
-	http.HandleFunc("/health", healthHandler)
+	http.HandleFunc("/generate-script", yt.generateScriptHandler) // step 1
+	http.HandleFunc("/scripts/", yt.getScriptStatusHandler)
+	http.HandleFunc("/generate-audio/", yt.generateAudioHandler)       // step 2
+	http.HandleFunc("/generate-subtitle/", yt.generateSubtitleHandler) // step 3
+	http.HandleFunc("/generate-visual/", yt.generateVisualHandler)     // step 4
+	http.HandleFunc("/scripts-chunks/", yt.getScriptChunksHandler)
+	http.HandleFunc("/health", yt.healthHandler)
 	http.HandleFunc("/channels/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		if strings.HasSuffix(path, "/scripts") {
-			getChannelScriptsHandler(w, r)
+			yt.getChannelScriptsHandler(w, r)
 		} else {
-			getChannelInfoHandler(w, r)
+			yt.getChannelInfoHandler(w, r)
 		}
 	})
 	// Start server
@@ -77,8 +118,17 @@ func main() {
 
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
+func LoadEnvironmentVariables() error {
+	err := godotenv.Load()
+	if err != nil {
+		return fmt.Errorf("error loading .env file: %w", err)
+	}
 
-func initializeMongoDB() error {
+	slog.Debug("Environment variables loaded successfully")
+	return nil
+}
+
+func initializeMongoDB() (*mongo.Client, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -86,29 +136,28 @@ func initializeMongoDB() error {
 	mongoURI := getMongoURI()
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
 	if err != nil {
-		return fmt.Errorf("failed to connect to MongoDB: %v", err)
+		return nil, fmt.Errorf("failed to connect to MongoDB: %v", err)
 	}
 
 	// Test connection
 	if err := client.Ping(ctx, nil); err != nil {
-		return fmt.Errorf("failed to ping MongoDB: %v", err)
+		return nil, fmt.Errorf("failed to ping MongoDB: %v", err)
 	}
 
 	// Initialize global variables
-	mongoClient = client
 	database = client.Database(getMongoDB())
 	channelsCollection = database.Collection("channels")
-	scriptsCollection = database.Collection("script_generations")
-	scriptChunksCollection = database.Collection("script_chunks")
+	scriptsCollection = database.Collection("scripts")
+	scriptChunksCollection = database.Collection("script_audios")
 	chunkVisualsCollection = database.Collection("chunk_visuals") // ADD THIS LINE
 
 	// Create indexes
 	if err := createIndexes(); err != nil {
-		return fmt.Errorf("failed to create indexes: %v", err)
+		return nil, fmt.Errorf("failed to create indexes: %v", err)
 	}
 
 	fmt.Println("✓ MongoDB connected successfully")
-	return nil
+	return client, nil
 }
 
 func createIndexes() error {
@@ -152,29 +201,8 @@ func createIndexes() error {
 	return err
 }
 
-func initializeServices() error {
-	// Get API key
-	apiKey := getAPIKey()
-	if apiKey == "" {
-		return fmt.Errorf("API key not found. Set GEMINI_API_KEY environment variable")
-	}
-
-	// Initialize services (same as original logic)
-	templateService = NewTemplateService()
-	geminiService = NewGeminiService(apiKey)
-	scriptService = NewScriptService(templateService, geminiService)
-
-	// Load templates
-	if err := templateService.LoadAllTemplates(); err != nil {
-		return fmt.Errorf("error loading templates: %v", err)
-	}
-
-	fmt.Println("✓ All templates loaded successfully")
-	return nil
-}
-
 // Get all scripts for a channel
-func getChannelScriptsHandler(w http.ResponseWriter, r *http.Request) {
+func (yt *YtAutomation) getChannelScriptsHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
@@ -197,7 +225,7 @@ func getChannelScriptsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer cursor.Close(context.Background())
 
-	var scripts []ScriptGeneration
+	var scripts []Script
 	if err = cursor.All(context.Background(), &scripts); err != nil {
 		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error decoding scripts: %v", err))
 		return
@@ -208,7 +236,7 @@ func getChannelScriptsHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 // Get channel info with script count
-func getChannelInfoHandler(w http.ResponseWriter, r *http.Request) {
+func (yt *YtAutomation) getChannelInfoHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
@@ -234,7 +262,7 @@ func getChannelInfoHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(channel)
 }
 
-func generateScriptHandler(w http.ResponseWriter, r *http.Request) {
+func (yt *YtAutomation) generateScriptHandler(w http.ResponseWriter, r *http.Request) {
 	// Set CORS headers
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
@@ -282,6 +310,9 @@ func generateScriptHandler(w http.ResponseWriter, r *http.Request) {
 				Settings: ChannelSettings{
 					DefaultSectionCount:     defaultSectionCount,
 					PreferredVisualGuidance: false,
+					WordLimitForHookIntro:   200,
+					VisualImageMultiplier:   visualImageMultiplier,
+					WordLimitPerSection:     500,
 				},
 			}
 			result, err := channelsCollection.InsertOne(context.Background(), newChannel)
@@ -298,7 +329,7 @@ func generateScriptHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create script generation record in MongoDB
-	scriptGen := &ScriptGeneration{
+	scriptGen := &Script{
 		ChannelID:       channel.ID,
 		ChannelName:     strings.TrimSpace(req.ChannelName),
 		Topic:           strings.TrimSpace(req.Topic),
@@ -306,7 +337,6 @@ func generateScriptHandler(w http.ResponseWriter, r *http.Request) {
 		GenerateVisuals: req.GenerateVisuals,
 		CreatedAt:       time.Now(),
 		OutlinePoints:   []OutlinePoint{},
-		ImagePrompts:    []ImagePrompt{},
 	}
 
 	// Insert into database
@@ -320,7 +350,7 @@ func generateScriptHandler(w http.ResponseWriter, r *http.Request) {
 	scriptGen.ID = scriptID
 
 	// Create script config
-	config, err := createScriptConfig(scriptGen, channel.Settings.DefaultSectionCount)
+	config, err := createScriptConfig(scriptGen, channel)
 	if err != nil {
 		updateScriptStatus(scriptID, StatusFailed, fmt.Sprintf("Error creating config: %v", err))
 		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error creating config: %v", err))
@@ -346,7 +376,7 @@ func generateScriptHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Process script generation in goroutine
 	go func() {
-		processScriptGeneration(scriptID, config)
+		yt.processScriptGeneration(scriptID, config)
 	}()
 
 	// Ensure or update channel record
@@ -375,11 +405,11 @@ func generateScriptHandler(w http.ResponseWriter, r *http.Request) {
 		req.ChannelName, req.Topic, scriptID.Hex())
 }
 
-func processScriptGeneration(scriptID primitive.ObjectID, config *ScriptConfig) {
+func (yt *YtAutomation) processScriptGeneration(scriptID primitive.ObjectID, config *ScriptConfig) {
 	startTime := time.Now()
 
 	// Generate script (same logic as original)
-	err := scriptService.GenerateCompleteScript(config, scriptID)
+	err := yt.GenerateCompleteScript(config, scriptID)
 
 	processingTime := time.Since(startTime).Seconds()
 
@@ -405,7 +435,7 @@ func processScriptGeneration(scriptID primitive.ObjectID, config *ScriptConfig) 
 		"status":                  StatusCompleted,
 		"processing_time_seconds": processingTime,
 		"completed_at":            time.Now(),
-		"sections_generated":      config.SectionCount,
+		"sections_generated":      config.channel.Settings.DefaultSectionCount,
 	}
 	_, updateErr := scriptsCollection.UpdateOne(
 		context.Background(),
@@ -417,13 +447,13 @@ func processScriptGeneration(scriptID primitive.ObjectID, config *ScriptConfig) 
 	}
 
 	// Update channel statistics
-	updateChannelStats(config.ChannelName, true)
+	updateChannelStats(config.channel.ChannelName, true)
 
 	log.Printf("✅ Script generation completed for ID: %s | Time: %.2fs",
 		scriptID.Hex(), processingTime)
 }
 
-func getScriptStatusHandler(w http.ResponseWriter, r *http.Request) {
+func (yt *YtAutomation) getScriptStatusHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
@@ -442,7 +472,7 @@ func getScriptStatusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Find script in database
-	var script ScriptGeneration
+	var script Script
 	err = scriptsCollection.FindOne(context.Background(), bson.M{"_id": objectID}).Decode(&script)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
@@ -456,7 +486,7 @@ func getScriptStatusHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(script)
 }
-func getScriptChunksHandler(w http.ResponseWriter, r *http.Request) {
+func (yt *YtAutomation) getScriptChunksHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
@@ -486,7 +516,7 @@ func getScriptChunksHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer cursor.Close(context.Background())
 
-	var chunks []ScriptChunk
+	var chunks []ScriptAudio
 	if err = cursor.All(context.Background(), &chunks); err != nil {
 		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error decoding chunks: %v", err))
 		return
@@ -497,6 +527,161 @@ func getScriptChunksHandler(w http.ResponseWriter, r *http.Request) {
 		"script_id":    path,
 		"total_chunks": len(chunks),
 		"chunks":       chunks,
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+func (yt *YtAutomation) generateAudioHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Extract script ID from URL path (/generate-audio/{scriptID})
+	path := strings.TrimPrefix(r.URL.Path, "/generate-audio/")
+	if path == "" {
+		respondWithError(w, http.StatusBadRequest, "Script ID is required")
+		return
+	}
+
+	// Convert to ObjectID
+	objectID, err := primitive.ObjectIDFromHex(path)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid script ID format")
+		return
+	}
+
+	var script Script
+	err = scriptsCollection.FindOne(context.Background(), bson.M{"_id": objectID}).Decode(&script)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			respondWithError(w, http.StatusNotFound, "Script not found")
+			return
+		}
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Database error: %v", err))
+		return
+	}
+
+	chunks := splitTextByCharLimit(script.FullScript, splitVoiceByCharLimit)
+	var chunkDocs []interface{}
+	var savedChunks []ScriptAudio
+
+	for i, chunk := range chunks {
+		chunkDoc := ScriptAudio{
+			ScriptID:   script.ID,
+			ChunkIndex: i + 1,
+			Content:    chunk,
+			CharCount:  len(chunk),
+			HasVisual:  false,
+			CreatedAt:  time.Now(),
+		}
+		chunkDocs = append(chunkDocs, chunkDoc)
+	}
+
+	// Insert all chunks in batch
+	if len(chunkDocs) > 0 {
+		result, err := scriptChunksCollection.InsertMany(context.Background(), chunkDocs)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save script chunks: %w", err))
+		}
+
+		// Prepare saved chunks with IDs for visual generation
+		for i, insertedID := range result.InsertedIDs {
+			chunk := chunkDocs[i].(ScriptAudio)
+			chunk.ID = insertedID.(primitive.ObjectID)
+			savedChunks = append(savedChunks, chunk)
+		}
+
+		fmt.Printf("✓ Saved %d script chunks to database\n", len(chunkDocs))
+	}
+
+	if err := yt.generateVoiceOver(script, chunks); err != nil {
+		fmt.Printf("Warning: Failed to generate audio for chunks: %v\n", err)
+	}
+	// Return response with chunks
+	response := map[string]interface{}{
+		"script_id":    path,
+		"total_chunks": len(chunks),
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+func (yt *YtAutomation) generateSubtitleHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Extract script ID from URL path (/generate-subtitle/{scriptID})
+	path := strings.TrimPrefix(r.URL.Path, "/generate-subtitle/")
+	if path == "" {
+		respondWithError(w, http.StatusBadRequest, "Script ID is required")
+		return
+	}
+
+	// Convert to ObjectID
+	objectID, err := primitive.ObjectIDFromHex(path)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid script ID format")
+		return
+	}
+
+	var script Script
+	err = scriptsCollection.FindOne(context.Background(), bson.M{"_id": objectID}).Decode(&script)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			respondWithError(w, http.StatusNotFound, "Script not found")
+			return
+		}
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Database error: %v", err))
+		return
+	}
+
+	srt, err := yt.GenerateSRT(TranscriptPayload{
+		AudioPath: "audio/" + script.OutputFilename,
+		Language:  "en",
+		OutputSrt: true,
+	})
+	if err != nil {
+		fmt.Printf("Warning: Failed to generate audio for chunks: %v\n", err)
+	}
+	_, err = scriptsCollection.UpdateOne(
+		context.Background(),
+		bson.M{"_id": script.ID},
+		bson.M{"$set": bson.M{"srt": srt}},
+	)
+	if err != nil {
+		fmt.Printf("Warning: Failed to save chunk audio file path: %v\n", err)
+	}
+	// Return response with chunks
+	response := map[string]interface{}{
+		"script_id": path,
+		"message":   "Subtitle generation completed",
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+func (yt *YtAutomation) generateVisualHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Extract script ID from URL path (/generate-visual/{scriptID})
+	path := strings.TrimPrefix(r.URL.Path, "/generate-visual/")
+	if path == "" {
+		respondWithError(w, http.StatusBadRequest, "Script ID is required")
+		return
+	}
+
+	// Convert to ObjectID
+	objectID, err := primitive.ObjectIDFromHex(path)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid script ID format")
+		return
+	}
+
+	// TODO: Implement visual generation logic, Generate visual from raw script or srt. yt.generateVisualsForChunks()
+	response := map[string]interface{}{
+		"script_id": path,
+		"objectID":  objectID,
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -519,6 +704,9 @@ func ensureChannelExists(channelName string) {
 			Settings: ChannelSettings{
 				DefaultSectionCount:     defaultSectionCount,
 				PreferredVisualGuidance: false,
+				WordLimitForHookIntro:   200,
+				VisualImageMultiplier:   visualImageMultiplier,
+				WordLimitPerSection:     500,
 			},
 		}
 
@@ -560,7 +748,7 @@ func updateScriptStatus(scriptID primitive.ObjectID, status, errorMsg string) {
 	)
 }
 
-func healthHandler(w http.ResponseWriter, r *http.Request) {
+func (yt *YtAutomation) healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	// Test MongoDB connection
@@ -568,7 +756,7 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	mongoStatus := "healthy"
-	if err := mongoClient.Ping(ctx, nil); err != nil {
+	if err := yt.mongoClient.Ping(ctx, nil); err != nil {
 		mongoStatus = "unhealthy: " + err.Error()
 	}
 
@@ -583,16 +771,15 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(health)
 }
 
-func createScriptConfig(scriptGen *ScriptGeneration, sectionCount int) (*ScriptConfig, error) {
+func createScriptConfig(scriptGen *Script, channel Channel) (*ScriptConfig, error) {
 
 	config := &ScriptConfig{
 		Topic:                scriptGen.Topic,
 		GenerateVisuals:      scriptGen.GenerateVisuals,
-		ChannelName:          scriptGen.ChannelName, // This should be replaced with dynamic channel name
 		OutputFolder:         sanitizeFilename(scriptGen.Topic),
 		OutputFilename:       fmt.Sprintf("script_%d.txt", time.Now().Unix()),
 		MetaTagFilename:      fmt.Sprintf("metatag_%d.txt", time.Now().Unix()),
-		SectionCount:         sectionCount,
+		channel:              channel,
 		SleepBetweenSections: defaultSleepBetweenSections,
 	}
 
@@ -607,13 +794,6 @@ func respondWithError(w http.ResponseWriter, statusCode int, message string) {
 	}
 	json.NewEncoder(w).Encode(response)
 	log.Printf("❌ Error: %s", message)
-}
-
-func getAPIKey() string {
-	if apiKey := os.Getenv("GEMINI_API_KEY"); apiKey != "" {
-		return apiKey
-	}
-	return "AIzaSyDykpGH35C4BRC_V3OK-GoHAIJ97RfwvMc"
 }
 
 func getPort() string {

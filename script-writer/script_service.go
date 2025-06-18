@@ -5,107 +5,91 @@ import (
 	"fmt"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
-	"log"
 	"os"
 	"strings"
 	"time"
 )
 
 // ScriptService orchestrates the script generation process
-type ScriptService struct {
-	templateService *TemplateService
-	geminiService   *GeminiService
-	outlineParser   *OutlineParser
-}
+//type ScriptService struct {
+//	templateService  *TemplateService
+//	geminiService    *GeminiService
+//	outlineParser    *OutlineParser
+//	elevenLabsClient *elevenlabs.ElevenLabsClient
+//	client           *http.Client
+//}
 
-// NewScriptService creates a new script service
-func NewScriptService(templateService *TemplateService, geminiService *GeminiService) *ScriptService {
-	return &ScriptService{
-		templateService: templateService,
-		geminiService:   geminiService,
-		outlineParser:   NewOutlineParser(),
-	}
-}
+//func NewScriptService(templateService *TemplateService, geminiService *GeminiService) *ScriptService {
+//	return &ScriptService{
+//		templateService: templateService,
+//		geminiService:   geminiService,
+//		outlineParser:   NewOutlineParser(),
+//		elevenLabsClient: elevenlabs.NewElevenLabsClient(os.Getenv("ELEVENLABS_API_KEY"), &elevenlabs.Proxy{
+//			Server:   os.Getenv("PROXY_SERVER"),
+//			Username: os.Getenv("PROXY_USERNAME"),
+//			Password: os.Getenv("PROXY_PASSWORD"),
+//		}),
+//		client: &http.Client{Timeout: timeout},
+//	}
+//}
 
-// GenerateCompleteScript generates a complete script from start to finish
-func (s *ScriptService) GenerateCompleteScript(config *ScriptConfig, scriptID primitive.ObjectID) error {
+func (yt *YtAutomation) GenerateCompleteScript(config *ScriptConfig, scriptID primitive.ObjectID) error {
 	session := NewScriptSession(config, scriptID)
 
-	fmt.Printf("📁 Creating output folder: %s\n", session.OutputFolder)
-	fmt.Printf("📄 Script will be saved to: %s\n", session.ScriptFilename)
-	fmt.Printf("🏷️  Meta tags will be saved to: %s\n", session.MetaTagFilename)
-
 	// Step 1: Generate outline
-	if err := s.generateOutline(session); err != nil {
+	if err := yt.generateOutline(session, config.channel.Settings.DefaultSectionCount); err != nil {
 		return fmt.Errorf("generating outline: %w", err)
 	}
 
 	// Step 2: Parse outline points
-	session.OutlinePoints = s.outlineParser.ParseOutlinePoints(session.Outline)
+	session.OutlinePoints = yt.outlineParser.ParseOutlinePoints(session.Outline, config.channel.Settings.DefaultSectionCount)
 	fmt.Printf("✓ Parsed %d outline points\n", len(session.OutlinePoints))
-	s.displayOutlinePoints(session.OutlinePoints)
+	yt.displayOutlinePoints(session.OutlinePoints)
 
 	// Step 3: Generate hook and introduction
-	if err := s.generateHookAndIntroduction(session); err != nil {
+	if err := yt.generateHookAndIntroduction(session); err != nil {
 		return fmt.Errorf("generating hook and introduction: %w", err)
 	}
-
-	imagePrompts := []ImagePrompt{}
 	// Step 4: Generate all sections
-	for i := 1; i <= config.SectionCount; i++ {
+	for i := 1; i <= config.channel.Settings.DefaultSectionCount; i++ {
 		session.CurrentStep = i
 		fmt.Printf("\nAuto-generating Section %d...\n", i)
 
-		if err := s.generateSection(session); err != nil {
+		if err := yt.generateSection(session); err != nil {
 			return fmt.Errorf("generating section %d: %w", i, err)
 		}
-		if config.GenerateVisuals {
-			promptStr, err := s.generateVisualGuidance(session)
-			if err != nil {
-				fmt.Printf("Warning: Error generating visual guidance: %v\n", err)
-				// Continue even if visual guidance fails
-			}
-			prompts, err := ParsePromptsFromFile(promptStr, 1)
-			if err != nil {
-				log.Fatalf("Failed to parse prompts: %v", err)
-			}
-
-			fmt.Printf("Found %d prompts\n", len(prompts))
-			imagePrompts = append(imagePrompts, prompts...)
-		}
 		// Sleep between sections for rate limiting
-		if i < config.SectionCount {
+		if i < config.channel.Settings.DefaultSectionCount {
 			fmt.Printf("Sleeping for %v before next section...\n", config.SleepBetweenSections)
 			time.Sleep(config.SleepBetweenSections)
 		}
 	}
 
 	// Step 5: Generate meta tags (description, tags, and thumbnail statement)
-	if err := s.generateMetaTag(session); err != nil {
+	if err := yt.generateMetaTag(session); err != nil {
 		fmt.Printf("Warning: Error generating meta tags: %v\n", err)
 		// Continue even if meta tag generation fails
 	}
 
 	// Final save for both files
-	if err := s.saveScriptFile(session); err != nil {
+	if err := yt.saveScriptFile(session); err != nil {
 		return fmt.Errorf("saving script file: %w", err)
 	}
 
 	if session.MetaTag != "" {
-		if err := s.saveMetaTagFile(session); err != nil {
+		if err := yt.saveMetaTagFile(session); err != nil {
 			return fmt.Errorf("saving meta tag file: %w", err)
 		}
 	}
 
 	// Update in database
 	updateData := bson.M{
-		"full_script":   session.Content.String(),
-		"meta_tag":      session.MetaTag,
-		"image_prompts": imagePrompts,
+		"full_script": session.Content.String(),
+		"meta_tag":    session.MetaTag,
 	}
 
 	// You'll need to pass scriptID to this method
-	if err := s.updateScriptInDB(session.ScriptID, updateData); err != nil {
+	if err := yt.updateScriptInDB(session.ScriptID, updateData); err != nil {
 		fmt.Printf("Warning: Failed to update outline in DB: %v\n", err)
 	}
 	// Print completion summary
@@ -116,14 +100,23 @@ func (s *ScriptService) GenerateCompleteScript(config *ScriptConfig, scriptID pr
 		fmt.Printf("🏷️  Meta tag file: %s\n", session.MetaTagFilename)
 	}
 
+	// If full_script is being updated, also save chunks
+	//if fullScript, exists := updateData["full_script"]; exists {
+	//	if scriptStr, ok := fullScript.(string); ok && scriptStr != "" {
+	//		if chunkErr := yt.saveScriptChunks(scriptID, scriptStr); chunkErr != nil {
+	//			fmt.Printf("Warning: Failed to save script chunks: %v\n", chunkErr)
+	//		}
+	//	}
+	//}
+
 	return nil
 }
 
-func (s *ScriptService) generateOutline(session *ScriptSession) error {
+func (yt *YtAutomation) generateOutline(session *ScriptSession, sectionCount int) error {
 	fmt.Println("Generating outline...")
 
-	prompt := s.templateService.BuildOutlinePrompt(session.Config.Topic)
-	response, err := s.geminiService.GenerateContent(prompt)
+	prompt := yt.templateService.BuildOutlinePrompt(session.Config.Topic, sectionCount)
+	response, err := yt.geminiService.GenerateContent(prompt)
 	if err != nil {
 		return err
 	}
@@ -132,7 +125,7 @@ func (s *ScriptService) generateOutline(session *ScriptSession) error {
 	session.UpdateContext(response, "outline")
 
 	// Parse outline points
-	session.OutlinePoints = s.outlineParser.ParseOutlinePoints(response)
+	session.OutlinePoints = yt.outlineParser.ParseOutlinePoints(response, sectionCount)
 
 	// Convert to MongoDB format
 	var outlinePoints []OutlinePoint
@@ -151,7 +144,7 @@ func (s *ScriptService) generateOutline(session *ScriptSession) error {
 	}
 
 	// You'll need to pass scriptID to this method
-	if err := s.updateScriptInDB(session.ScriptID, updateData); err != nil {
+	if err := yt.updateScriptInDB(session.ScriptID, updateData); err != nil {
 		fmt.Printf("Warning: Failed to update outline in DB: %v\n", err)
 	}
 
@@ -160,11 +153,11 @@ func (s *ScriptService) generateOutline(session *ScriptSession) error {
 	return nil
 }
 
-func (s *ScriptService) generateHookAndIntroduction(session *ScriptSession) error {
+func (yt *YtAutomation) generateHookAndIntroduction(session *ScriptSession) error {
 	fmt.Println("Generating Hook and Introduction...")
 
-	prompt := s.templateService.BuildHookIntroPrompt(session)
-	response, err := s.geminiService.GenerateContextAwareContent(session, prompt)
+	prompt := yt.templateService.BuildHookIntroPrompt(session)
+	response, err := yt.geminiService.GenerateContextAwareContent(session, prompt)
 	if err != nil {
 		return err
 	}
@@ -183,15 +176,15 @@ func (s *ScriptService) generateHookAndIntroduction(session *ScriptSession) erro
 	fmt.Println("\n" + strings.Repeat("-", 50))
 
 	// Save progress
-	s.saveScriptFile(session)
+	yt.saveScriptFile(session)
 	return nil
 }
 
-func (s *ScriptService) generateMetaTag(session *ScriptSession) error {
+func (yt *YtAutomation) generateMetaTag(session *ScriptSession) error {
 	fmt.Println("Generating Meta Tags (Description, Tags, and Thumbnail Statement)...")
 
-	prompt := s.templateService.BuildMetaTagPrompt(session)
-	response, err := s.geminiService.GenerateContextAwareContent(session, prompt)
+	prompt := yt.templateService.BuildMetaTagPrompt(session)
+	response, err := yt.geminiService.GenerateContextAwareContent(session, prompt)
 	if err != nil {
 		return err
 	}
@@ -205,10 +198,10 @@ func (s *ScriptService) generateMetaTag(session *ScriptSession) error {
 	fmt.Println("\n" + strings.Repeat("-", 50))
 
 	// Save meta tag file immediately
-	return s.saveMetaTagFile(session)
+	return yt.saveMetaTagFile(session)
 }
 
-func (s *ScriptService) generateSection(session *ScriptSession) error {
+func (yt *YtAutomation) generateSection(session *ScriptSession) error {
 	sectionNumber := session.CurrentStep
 
 	// Get the outline point for this section
@@ -223,8 +216,8 @@ func (s *ScriptService) generateSection(session *ScriptSession) error {
 	}
 	fmt.Println("...")
 
-	prompt := s.templateService.BuildSectionPrompt(session, sectionNumber, outlinePoint)
-	response, err := s.geminiService.GenerateContextAwareContent(session, prompt)
+	prompt := yt.templateService.BuildSectionPrompt(session, sectionNumber, outlinePoint)
+	response, err := yt.geminiService.GenerateContextAwareContent(session, prompt)
 	if err != nil {
 		return err
 	}
@@ -244,34 +237,14 @@ func (s *ScriptService) generateSection(session *ScriptSession) error {
 	fmt.Println("\n" + strings.Repeat("-", 50))
 
 	// Save progress
-	return s.saveScriptFile(session)
+	return yt.saveScriptFile(session)
 }
 
-func (s *ScriptService) generateVisualGuidance(session *ScriptSession) (string, error) {
-	fmt.Println("Generating Visual Guidance...")
-
-	prompt := s.templateService.BuildVisualGuidancePrompt(session)
-	response, err := s.geminiService.GenerateContextAwareContent(session, prompt)
-	if err != nil {
-		return "", err
-	}
-
-	// Add visual guidance to script content
-	session.Content.WriteString("\n\n" + strings.Repeat("=", 60) + "\n")
-	session.Content.WriteString("VISUAL GUIDANCE\n")
-	session.Content.WriteString(strings.Repeat("=", 60) + "\n\n")
-	session.Content.WriteString(response)
-	session.Content.WriteString("\n\n\n")
-
-	fmt.Println("VISUAL GUIDANCE GENERATED:")
-	return response, nil
-}
-
-func (s *ScriptService) initializeFileContent(session *ScriptSession) {
+func (yt *YtAutomation) initializeFileContent(session *ScriptSession) {
 	session.Content.WriteString("\n")
 }
 
-func (s *ScriptService) displayOutlinePoints(points []string) {
+func (yt *YtAutomation) displayOutlinePoints(points []string) {
 	if len(points) > 0 {
 		fmt.Println("\nParsed Outline Points:")
 		for i, point := range points {
@@ -281,7 +254,7 @@ func (s *ScriptService) displayOutlinePoints(points []string) {
 	}
 }
 
-func (s *ScriptService) saveScriptFile(session *ScriptSession) error {
+func (yt *YtAutomation) saveScriptFile(session *ScriptSession) error {
 	file, err := os.Create(session.ScriptFilename)
 	if err != nil {
 		return fmt.Errorf("creating script file: %w", err)
@@ -297,7 +270,7 @@ func (s *ScriptService) saveScriptFile(session *ScriptSession) error {
 	return nil
 }
 
-func (s *ScriptService) saveMetaTagFile(session *ScriptSession) error {
+func (yt *YtAutomation) saveMetaTagFile(session *ScriptSession) error {
 	if session.MetaTag == "" {
 		return nil // Nothing to save
 	}
@@ -310,7 +283,7 @@ func (s *ScriptService) saveMetaTagFile(session *ScriptSession) error {
 
 	// Create a formatted meta tag file
 	content := fmt.Sprintf("=== WISDERLY YOUTUBE META INFORMATION ===\n")
-	content += fmt.Sprintf("Channel: %s\n", session.Config.ChannelName)
+	content += fmt.Sprintf("Channel: %s\n", session.Config.channel.ChannelName)
 	content += fmt.Sprintf("Topic: %s\n", session.Config.Topic)
 	content += fmt.Sprintf("Generated: %s\n", time.Now().Format("2006-01-02 15:04:05"))
 	content += fmt.Sprintf("Outline: \n%s\n\n", session.Outline)
@@ -326,35 +299,25 @@ func (s *ScriptService) saveMetaTagFile(session *ScriptSession) error {
 	return nil
 }
 
-// Add this method to ScriptService
-func (s *ScriptService) updateScriptInDB(scriptID primitive.ObjectID, updateData bson.M) error {
+func (yt *YtAutomation) updateScriptInDB(scriptID primitive.ObjectID, updateData bson.M) error {
 	_, err := scriptsCollection.UpdateOne(
 		context.Background(),
 		bson.M{"_id": scriptID},
 		bson.M{"$set": updateData},
 	)
 
-	// If full_script is being updated, also save chunks
-	if fullScript, exists := updateData["full_script"]; exists && err == nil {
-		if scriptStr, ok := fullScript.(string); ok && scriptStr != "" {
-			if chunkErr := s.saveScriptChunks(scriptID, scriptStr); chunkErr != nil {
-				fmt.Printf("Warning: Failed to save script chunks: %v\n", chunkErr)
-			}
-		}
-	}
-
 	return err
 }
-func (s *ScriptService) saveScriptChunks(scriptID primitive.ObjectID, fullScript string) error {
+func (yt *YtAutomation) saveScriptChunks(scriptID primitive.ObjectID, fullScript string) error {
 	// Split the script into chunks
-	chunks := splitTextByCharLimit(fullScript, 1000)
+	chunks := splitTextByCharLimit(fullScript, splitByCharLimit)
 
 	// Prepare chunk documents for batch insert
 	var chunkDocs []interface{}
-	var savedChunks []ScriptChunk
+	var savedChunks []ScriptAudio
 
 	for i, chunk := range chunks {
-		chunkDoc := ScriptChunk{
+		chunkDoc := ScriptAudio{
 			ScriptID:   scriptID,
 			ChunkIndex: i + 1,
 			Content:    chunk,
@@ -374,20 +337,58 @@ func (s *ScriptService) saveScriptChunks(scriptID primitive.ObjectID, fullScript
 
 		// Prepare saved chunks with IDs for visual generation
 		for i, insertedID := range result.InsertedIDs {
-			chunk := chunkDocs[i].(ScriptChunk)
+			chunk := chunkDocs[i].(ScriptAudio)
 			chunk.ID = insertedID.(primitive.ObjectID)
 			savedChunks = append(savedChunks, chunk)
 		}
 
 		fmt.Printf("✓ Saved %d script chunks to database\n", len(chunkDocs))
 
+		// Generate audio for all chunks
+		//go func() {
+		//	if err := yt.generateVoiceOver(savedChunks); err != nil {
+		//		fmt.Printf("Warning: Failed to generate audio for chunks: %v\n", err)
+		//	}
+		//}()
 		// Generate visuals for all chunks
 		go func() {
-			if err := s.generateVisualsForChunks(scriptID, savedChunks); err != nil {
+			if err := yt.generateVisualsForChunks(scriptID, savedChunks); err != nil {
 				fmt.Printf("Warning: Failed to generate visuals for chunks: %v\n", err)
 			}
 		}()
 	}
 
 	return nil
+}
+
+func (yt *YtAutomation) generateVoiceOver(script Script, chunks []string) error {
+	fmt.Printf("🎨 Starting Voice generation for %d chunks...\n", len(chunks))
+
+	for i, _ := range chunks {
+		fmt.Printf("Generating Voice for chunk %d/%d...\n", i+1, len(chunks))
+
+		// Generate speech
+		//audioData, err := yt.elevenLabsClient.TextToSpeech(chunk, os.Getenv("VOICE_ID"))
+		//if err != nil {
+		//	return fmt.Errorf("Error generating speech: %v\n", err)
+		//}
+		//
+		//timestamp := time.Now().Format("20060102_15_04_05")
+		//filename := fmt.Sprintf("%s_voiceover_%d_%s.mp3", script.ChannelName, i, timestamp)
+		//if err = saveAudioFile(audioData, filename); err != nil {
+		//	return fmt.Errorf("Error saving audio file: %v\n", err)
+		//}
+		yt.SaveChunkAudioFile(script.ID, "filename")
+	}
+	return nil
+}
+func (yt *YtAutomation) SaveChunkAudioFile(chunkID primitive.ObjectID, filepath string) {
+	_, err := scriptChunksCollection.UpdateOne(
+		context.Background(),
+		bson.M{"_id": chunkID},
+		bson.M{"$set": bson.M{"audio_file": filepath}},
+	)
+	if err != nil {
+		fmt.Printf("Warning: Failed to save chunk audio file path: %v\n", err)
+	}
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -130,4 +131,17 @@ func splitTextByCharLimit(text string, charLimit int) []string {
 	}
 
 	return blocks
+}
+func saveAudioFile(data []byte, filename string) error {
+	path := filepath.Join("assets", "audio")
+	if err := ensureOutputDir(path); err != nil {
+		return fmt.Errorf("error creating output directory: %v", err)
+	}
+	path = filepath.Join(path, filename)
+	return os.WriteFile(path, data, 0644)
+
+}
+
+func ensureOutputDir(outputDir string) error {
+	return os.MkdirAll(outputDir, 0755)
 }

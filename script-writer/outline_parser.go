@@ -22,8 +22,7 @@ func NewOutlineParser() *OutlineParser {
 	}
 }
 
-// Update ParseOutlinePoints to handle the format better
-func (p *OutlineParser) ParseOutlinePoints(outlineResponse string) []string {
+func (p *OutlineParser) ParseOutlinePoints(outlineResponse string, sectionCount int) []string {
 	var points []string
 	lines := strings.Split(outlineResponse, "\n")
 
@@ -56,7 +55,7 @@ func (p *OutlineParser) ParseOutlinePoints(outlineResponse string) []string {
 		points = p.extractMainPoints(lines)
 	}
 
-	return p.validateAndCleanPoints(points)
+	return p.validateAndCleanPoints(points, sectionCount)
 }
 
 // combineMatches combines title and description from regex matches
@@ -123,18 +122,16 @@ func (p *OutlineParser) looksLikeMainPoint(line string) bool {
 	return hasColon || isComplete
 }
 
-// isCapitalLetter checks if a rune is a capital letter
 func (p *OutlineParser) isCapitalLetter(r rune) bool {
 	return r >= 'A' && r <= 'Z'
 }
 
-// validateAndCleanPoints validates and cleans the extracted points
-func (p *OutlineParser) validateAndCleanPoints(points []string) []string {
+func (p *OutlineParser) validateAndCleanPoints(points []string, sectionCount int) []string {
 	var cleaned []string
 
 	for _, point := range points {
 		// Clean the point
-		cleaned_point := p.cleanPoint(point)
+		cleaned_point := p.cleanPoint(point, sectionCount)
 
 		// Validate the point
 		//if p.isValidPoint(cleaned_point) {
@@ -151,14 +148,13 @@ func (p *OutlineParser) validateAndCleanPoints(points []string) []string {
 	return cleaned
 }
 
-// cleanPoint removes unwanted characters and formats the point
-func (p *OutlineParser) cleanPoint(point string) string {
+func (p *OutlineParser) cleanPoint(point string, sectionCount int) string {
 	// Remove excessive whitespace
 	point = strings.TrimSpace(point)
 
 	// Remove common prefixes
 	prefixes := []string{"**", "*", "-", "•"}
-	for i := 1; i <= defaultSectionCount; i++ {
+	for i := 1; i <= sectionCount; i++ {
 		prefixes = append(prefixes, strconv.Itoa(i)+".")
 	}
 	for _, prefix := range prefixes {

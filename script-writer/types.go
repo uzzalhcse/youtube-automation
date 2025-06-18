@@ -12,13 +12,12 @@ import (
 // ScriptConfig holds configuration for script generation
 type ScriptConfig struct {
 	Topic                string
-	ChannelName          string // New field for channel name
 	GenerateVisuals      bool
 	OutputFilename       string // This will be the script filename
 	MetaTagFilename      string // New field for meta tag filename
 	OutputFolder         string // New field for output folder path (video title)
-	SectionCount         int
 	SleepBetweenSections time.Duration
+	channel              Channel
 }
 
 // ScriptSession represents the current state of script generation
@@ -54,31 +53,13 @@ const (
 	visualImageMultiplier       = 5
 	defaultSleepBetweenSections = 1 * time.Second
 	maxRetries                  = 5
-	channelName                 = "Wisderly" // Default channel name
+	splitVoiceByCharLimit       = 4990 // Maximum character limit for splitting text into manageable chunks for voice generation
+	splitByCharLimit            = 1000 // Maximum character limit for splitting text into manageable chunks for visual generation
 )
 
-func NewScriptConfig(topic, channelName, videoTitle string) *ScriptConfig {
-	// Sanitize video title for folder name
-	sanitizedVideoTitle := sanitizeFilename(videoTitle)
-
-	config := &ScriptConfig{
-		Topic:                topic,
-		ChannelName:          channelName,
-		GenerateVisuals:      true,
-		OutputFolder:         sanitizedVideoTitle, // Just the video title, not combined
-		OutputFilename:       "script.txt",
-		MetaTagFilename:      "metatag.txt",
-		SectionCount:         defaultSectionCount,
-		SleepBetweenSections: defaultSleepBetweenSections,
-	}
-
-	return config
-}
-
-// NewScriptSession creates a new script session
 func NewScriptSession(config *ScriptConfig, scriptID primitive.ObjectID) *ScriptSession {
 	// Create the full folder path: ChannelName/VideoTitle
-	fullFolderPath := filepath.Join("output-scripts", config.ChannelName, config.OutputFolder)
+	fullFolderPath := filepath.Join("output-scripts", config.channel.ChannelName, config.OutputFolder)
 
 	// Create output folder if it doesn't exist
 	if err := os.MkdirAll(fullFolderPath, 0755); err != nil {
