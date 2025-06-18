@@ -18,13 +18,14 @@ import (
 
 // Global services and database
 var (
-	templateService    *TemplateService
-	geminiService      *GeminiService
-	scriptService      *ScriptService
-	mongoClient        *mongo.Client
-	database           *mongo.Database
-	channelsCollection *mongo.Collection
-	scriptsCollection  *mongo.Collection
+	templateService        *TemplateService
+	geminiService          *GeminiService
+	scriptService          *ScriptService
+	mongoClient            *mongo.Client
+	database               *mongo.Database
+	channelsCollection     *mongo.Collection
+	scriptsCollection      *mongo.Collection
+	scriptChunksCollection *mongo.Collection
 )
 
 const (
@@ -49,6 +50,7 @@ func main() {
 	// Setup HTTP routes
 	http.HandleFunc("/generate-script", generateScriptHandler)
 	http.HandleFunc("/scripts/", getScriptStatusHandler)
+	http.HandleFunc("/scripts-chunks/", getScriptChunksHandler)
 	http.HandleFunc("/health", healthHandler)
 	http.HandleFunc("/channels/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -64,9 +66,12 @@ func main() {
 	fmt.Printf("Server starting on port %s\n", port)
 	fmt.Printf("MongoDB connected: %s\n", getMongoURI())
 	fmt.Printf("Endpoints:\n")
-	fmt.Printf("  POST /generate-script    - Generate YouTube script\n")
-	fmt.Printf("  GET  /scripts/{id}       - Get script status\n")
-	fmt.Printf("  GET  /health            - Health check\n")
+	fmt.Printf("  POST /generate-script           - Generate YouTube script\n")
+	fmt.Printf("  GET  /scripts/{id}              - Get script status\n")
+	fmt.Printf("  GET  /scripts-chunks/{id}       - Get script chunks\n")
+	fmt.Printf("  GET  /channels/{name}/scripts   - Get channel scripts\n")
+	fmt.Printf("  GET  /channels/{name}           - Get channel info\n")
+	fmt.Printf("  GET  /health                    - Health check\n")
 	fmt.Println(strings.Repeat("=", 50))
 
 	log.Fatal(http.ListenAndServe(":"+port, nil))
@@ -93,6 +98,7 @@ func initializeMongoDB() error {
 	database = client.Database(getMongoDB())
 	channelsCollection = database.Collection("channels")
 	scriptsCollection = database.Collection("script_generations")
+	scriptChunksCollection = database.Collection("script_chunks")
 
 	// Create indexes
 	if err := createIndexes(); err != nil {
@@ -116,6 +122,19 @@ func createIndexes() error {
 		},
 		{
 			Keys: bson.D{{"status", 1}, {"created_at", -1}},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	// Index for script_chunks
+	_, err = scriptChunksCollection.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys:    bson.D{{"script_id", 1}, {"chunk_index", 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys: bson.D{{"script_id", 1}},
 		},
 	})
 	if err != nil {
@@ -435,7 +454,52 @@ func getScriptStatusHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(script)
 }
+func getScriptChunksHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 
+	// Extract script ID from URL path (/scripts-chunks/{scriptID})
+	path := strings.TrimPrefix(r.URL.Path, "/scripts-chunks/")
+	if path == "" {
+		respondWithError(w, http.StatusBadRequest, "Script ID is required")
+		return
+	}
+
+	// Convert to ObjectID
+	objectID, err := primitive.ObjectIDFromHex(path)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid script ID format")
+		return
+	}
+
+	// Find chunks in database
+	cursor, err := scriptChunksCollection.Find(
+		context.Background(),
+		bson.M{"script_id": objectID},
+		options.Find().SetSort(bson.D{{"chunk_index", 1}}),
+	)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Database error: %v", err))
+		return
+	}
+	defer cursor.Close(context.Background())
+
+	var chunks []ScriptChunk
+	if err = cursor.All(context.Background(), &chunks); err != nil {
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error decoding chunks: %v", err))
+		return
+	}
+
+	// Return response with chunks
+	response := map[string]interface{}{
+		"script_id":    path,
+		"total_chunks": len(chunks),
+		"chunks":       chunks,
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
 func ensureChannelExists(channelName string) {
 	ctx := context.Background()
 

@@ -40,3 +40,94 @@ func ParsePromptsFromFile(filename string, sectionNumber int) ([]ImagePrompt, er
 
 	return prompts, nil
 }
+func splitTextByCharLimit(text string, charLimit int) []string {
+	if len(text) <= charLimit {
+		return []string{text}
+	}
+
+	// Define sentence-ending patterns (period, exclamation, question mark followed by space or end)
+	sentenceRegex := regexp.MustCompile(`[.!?]+(?:\s+|$)`)
+
+	var blocks []string
+	currentBlock := ""
+
+	// Find all sentence boundaries
+	sentences := sentenceRegex.Split(text, -1)
+	sentenceEnds := sentenceRegex.FindAllStringIndex(text, -1)
+
+	// Reconstruct sentences with their punctuation
+	var fullSentences []string
+	for i, sentence := range sentences {
+		if i < len(sentenceEnds) {
+			// Get the punctuation from the original text
+			endPos := sentenceEnds[i][1]
+			startPos := sentenceEnds[i][0]
+			punctuation := text[startPos:endPos]
+			fullSentences = append(fullSentences, sentence+punctuation)
+		} else if strings.TrimSpace(sentence) != "" {
+			// Last sentence might not have punctuation
+			fullSentences = append(fullSentences, sentence)
+		}
+	}
+
+	for _, sentence := range fullSentences {
+		sentence = strings.TrimSpace(sentence)
+		if sentence == "" {
+			continue
+		}
+
+		// If adding this sentence would exceed the limit
+		if len(currentBlock)+len(sentence) > charLimit {
+			// If current block is not empty, save it
+			if currentBlock != "" {
+				blocks = append(blocks, strings.TrimSpace(currentBlock))
+				currentBlock = ""
+			}
+
+			// If a single sentence is longer than the limit, we need to handle it
+			if len(sentence) > charLimit {
+				// Split the long sentence by words while staying under limit
+				words := strings.Fields(sentence)
+				tempSentence := ""
+
+				for _, word := range words {
+					if len(tempSentence)+len(word)+1 <= charLimit {
+						if tempSentence == "" {
+							tempSentence = word
+						} else {
+							tempSentence += " " + word
+						}
+					} else {
+						if tempSentence != "" {
+							blocks = append(blocks, tempSentence)
+							tempSentence = word
+						} else {
+							// Single word is longer than limit, force add it
+							blocks = append(blocks, word)
+							tempSentence = ""
+						}
+					}
+				}
+				if tempSentence != "" {
+					currentBlock = tempSentence
+				}
+			} else {
+				currentBlock = sentence
+			}
+		} else {
+			// Add sentence to current block
+			if currentBlock == "" {
+				currentBlock = sentence
+			} else {
+				currentBlock += " " + sentence
+			}
+		}
+	}
+
+	// Add the last block if it's not empty
+	if currentBlock != "" {
+		blocks = append(blocks, strings.TrimSpace(currentBlock))
+	}
+
+	return blocks
+}

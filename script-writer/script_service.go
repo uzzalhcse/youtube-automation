@@ -333,5 +333,44 @@ func (s *ScriptService) updateScriptInDB(scriptID primitive.ObjectID, updateData
 		bson.M{"_id": scriptID},
 		bson.M{"$set": updateData},
 	)
+
+	// If full_script is being updated, also save chunks
+	if fullScript, exists := updateData["full_script"]; exists && err == nil {
+		if scriptStr, ok := fullScript.(string); ok && scriptStr != "" {
+			if chunkErr := s.saveScriptChunks(scriptID, scriptStr); chunkErr != nil {
+				fmt.Printf("Warning: Failed to save script chunks: %v\n", chunkErr)
+			}
+		}
+	}
+
 	return err
+}
+func (s *ScriptService) saveScriptChunks(scriptID primitive.ObjectID, fullScript string) error {
+	// Split the script into chunks
+	chunks := splitTextByCharLimit(fullScript, 1000)
+
+	// Prepare chunk documents for batch insert
+	var chunkDocs []interface{}
+	for i, chunk := range chunks {
+		chunkDoc := ScriptChunk{
+			ScriptID:   scriptID,
+			ChunkIndex: i + 1,
+			Content:    chunk,
+			CharCount:  len(chunk),
+			CreatedAt:  time.Now(),
+		}
+		chunkDocs = append(chunkDocs, chunkDoc)
+	}
+
+	// Insert all chunks in batch
+	if len(chunkDocs) > 0 {
+		_, err := scriptChunksCollection.InsertMany(context.Background(), chunkDocs)
+		if err != nil {
+			return fmt.Errorf("failed to save script chunks: %w", err)
+		}
+
+		fmt.Printf("✓ Saved %d script chunks to database\n", len(chunkDocs))
+	}
+
+	return nil
 }

@@ -80,3 +80,12 @@ type ScriptResponse struct {
 	GeneratedAt     string `json:"generated_at,omitempty"`
 	Error           string `json:"error,omitempty"`
 }
+
+type ScriptChunk struct {
+	ID         primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	ScriptID   primitive.ObjectID `bson:"script_id" json:"script_id"`
+	ChunkIndex int                `bson:"chunk_index" json:"chunk_index"`
+	Content    string             `bson:"content" json:"content"`
+	CharCount  int                `bson:"char_count" json:"char_count"`
+	CreatedAt  time.Time          `bson:"created_at" json:"created_at"`
+}
