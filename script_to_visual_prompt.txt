@@ -1,0 +1,245 @@
+You are a visual narration mapping assistant.
+
+I will give you .srt subtitle data. Your job is to output a dense series of visual prompts that match each key beat of the spoken narration.
+
+🧠 Visual Chunking Rules:
+
+New sentence? → Start a new visual unit
+
+Short line (e.g. <3s or <6 words)? → Merge only if it feels like a continuous idea
+
+Powerful/emotional words (e.g. “Boom.” “Yeah?” “Lazy.”) → Give their own visual moment
+
+Conceptual/emotional shifts? → Start new visual
+
+If uncertain: Prefer more visuals, not fewer
+
+⚠️ Avoid merging more than 10 seconds of narration into a single prompt.
+
+🎨 Visual Prompt Template:
+
+For each chunk, generate a unique visual using this template:
+
+
+
+A hand-drawn cartoon scene with a stick figure in a red scarf. Scene: {scene_concept}. Style: sketchy black-and-white with minimal red accent. Background in soft beige. Emotion: {emotion_or_mood}.
+
+🧠 scene_concept should reflect what’s happening or being said (literal, metaphorical, or symbolic).
+
+
+
+💬 emotion_or_mood should capture the tone: hopeful, anxious, dreamy, frustrated, etc.
+
+✅ Output Format:
+
+A JSON array like this:
+
+[
+
+  {
+
+    "start": "00:00:00,000",
+
+    "end": "00:00:04,940",
+
+    "prompt": "A stick figure in a red scarf looks at the sky full of clocks and stars, dreaming. Minimalist cartoon style. Mood: hopeful."
+
+  },
+
+  ...
+
+]
+
+🎯 Target: Output ~1 visual per idea or emotional beat. Do not compress multiple beats into one. If in doubt, split it.
+
+Now here is the .srt file:
+
+1
+
+00:00:00,000 --> 00:00:04,940
+
+Ever feel like you're meant for something
+
+bigger, but your days look exactly the same?
+
+
+
+2
+
+00:00:04,940 --> 00:00:09,300
+
+Like you've got all these dreams in your
+
+head, but somehow, you still end up doom-scrolling
+
+
+
+3
+
+00:00:09,300 --> 00:00:13,500
+
+at midnight, half-dressed, surrounded by
+
+snack wrappers.
+
+
+
+4
+
+00:00:13,500 --> 00:00:19,120
+
+If that's you, welcome to the club, and
+
+buckle up, 'cause this video might just change
+
+
+
+5
+
+00:00:19,120 --> 00:00:20,720
+
+your life.
+
+
+
+6
+
+00:00:20,720 --> 00:00:22,220
+
+Let me be real with you.
+
+
+
+7
+
+00:00:22,220 --> 00:00:27,000
+
+There's this weird space a lot of us live
+
+in, where we're super ambitious, but also kind
+
+
+
+8
+
+00:00:27,000 --> 00:00:33,520
+
+of lazy, not don't want anything, from
+
+life lazy, more like mentally exhausted, stuck
+
+
+
+9
+
+00:00:33,520 --> 00:00:37,200
+
+in quicksand, overthinking, every move
+
+kindle is.
+
+
+
+10
+
+00:00:37,200 --> 00:00:38,200
+
+Sound familiar?
+
+
+
+11
+
+00:00:38,200 --> 00:00:39,200
+
+Yeah?
+
+
+
+12
+
+00:00:39,200 --> 00:00:40,360
+
+I've been there, too.
+
+
+
+13
+
+00:00:40,360 --> 00:00:42,880
+
+You wake up with ideas buzzing in your
+
+head.
+
+
+
+14
+
+00:00:42,880 --> 00:00:44,840
+
+I could start that thing today.
+
+
+
+15
+
+00:00:44,840 --> 00:00:50,080
+
+I should finally change my situation, but
+
+then, boom, it's suddenly 6 p.m., you've barely
+
+
+
+16
+
+00:00:50,080 --> 00:00:55,080
+
+moved, maybe scrolled a bit, watched a few
+
+videos, felt guilty about it, and then you
+
+
+
+17
+
+00:00:55,080 --> 00:00:57,300
+
+do it all over again tomorrow.
+
+
+
+18
+
+00:00:57,300 --> 00:00:58,640
+
+But here's the scary truth.
+
+
+
+19
+
+00:00:58,640 --> 00:01:01,760
+
+Nobody tells you, the clock is ticking,
+
+and nothing's.
+
+
+
+20
+
+00:01:01,760 --> 00:01:04,040
+
+Changing, let's do some quick math.
+
+
+
+21
+
+00:01:04,040 --> 00:01:08,760
+
+There are 365 days in a year, that's 8,760
+
+hours.
