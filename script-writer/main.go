@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"youtube_automation/elevenlabs"
@@ -26,7 +27,7 @@ var (
 	database               *mongo.Database
 	channelsCollection     *mongo.Collection
 	scriptsCollection      *mongo.Collection
-	scriptChunksCollection *mongo.Collection
+	scriptAudiosCollection *mongo.Collection
 	chunkVisualsCollection *mongo.Collection
 )
 
@@ -148,7 +149,7 @@ func initializeMongoDB() (*mongo.Client, error) {
 	database = client.Database(getMongoDB())
 	channelsCollection = database.Collection("channels")
 	scriptsCollection = database.Collection("scripts")
-	scriptChunksCollection = database.Collection("script_audios")
+	scriptAudiosCollection = database.Collection("script_audios")
 	chunkVisualsCollection = database.Collection("chunk_visuals") // ADD THIS LINE
 
 	// Create indexes
@@ -179,7 +180,7 @@ func createIndexes() error {
 		return err
 	}
 	// Index for script_chunks
-	_, err = scriptChunksCollection.Indexes().CreateMany(ctx, []mongo.IndexModel{
+	_, err = scriptAudiosCollection.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{
 			Keys:    bson.D{{"script_id", 1}, {"chunk_index", 1}},
 			Options: options.Index().SetUnique(true),
@@ -505,7 +506,7 @@ func (yt *YtAutomation) getScriptChunksHandler(w http.ResponseWriter, r *http.Re
 	}
 
 	// Find chunks in database
-	cursor, err := scriptChunksCollection.Find(
+	cursor, err := scriptAudiosCollection.Find(
 		context.Background(),
 		bson.M{"script_id": objectID},
 		options.Find().SetSort(bson.D{{"chunk_index", 1}}),
@@ -561,49 +562,88 @@ func (yt *YtAutomation) generateAudioHandler(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	chunks := splitTextByCharLimit(script.FullScript, splitVoiceByCharLimit)
-	var chunkDocs []interface{}
+	// Check if chunks already exist for this script
+	existingCount, err := scriptAudiosCollection.CountDocuments(
+		context.Background(),
+		bson.M{"script_id": objectID},
+	)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error checking existing chunks: %v", err))
+		return
+	}
+	if err := os.MkdirAll(filepath.Join("assets", "audio"), 0755); err != nil {
+		log.Printf("Warning: Failed to create audio directory: %v", err)
+	}
 	var savedChunks []ScriptAudio
+	chunks := splitTextByCharLimit(script.FullScript, splitVoiceByCharLimit)
 
-	for i, chunk := range chunks {
-		chunkDoc := ScriptAudio{
-			ScriptID:   script.ID,
-			ChunkIndex: i + 1,
-			Content:    chunk,
-			CharCount:  len(chunk),
-			HasVisual:  false,
-			CreatedAt:  time.Now(),
-		}
-		chunkDocs = append(chunkDocs, chunkDoc)
-	}
+	if existingCount > 0 {
+		// Chunks already exist, fetch them instead of creating new ones
+		fmt.Printf("ℹ Script chunks already exist for script %s, fetching existing chunks\n", path)
 
-	// Insert all chunks in batch
-	if len(chunkDocs) > 0 {
-		result, err := scriptChunksCollection.InsertMany(context.Background(), chunkDocs)
+		findOptions := options.Find().SetSort(bson.M{"chunk_index": 1})
+		cursor, err := scriptAudiosCollection.Find(
+			context.Background(),
+			bson.M{"script_id": objectID},
+			findOptions,
+		)
 		if err != nil {
-			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save script chunks: %w", err))
+			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error fetching existing chunks: %v", err))
+			return
+		}
+		defer cursor.Close(context.Background())
+
+		if err = cursor.All(context.Background(), &savedChunks); err != nil {
+			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error decoding existing chunks: %v", err))
+			return
+		}
+	} else {
+		// Create new chunks
+		var chunkDocs []interface{}
+
+		for i, chunk := range chunks {
+			chunkDoc := ScriptAudio{
+				ScriptID:   script.ID,
+				ChunkIndex: i + 1,
+				Content:    chunk,
+				CharCount:  len(chunk),
+				HasVisual:  false,
+				CreatedAt:  time.Now(),
+			}
+			chunkDocs = append(chunkDocs, chunkDoc)
 		}
 
-		// Prepare saved chunks with IDs for visual generation
-		for i, insertedID := range result.InsertedIDs {
-			chunk := chunkDocs[i].(ScriptAudio)
-			chunk.ID = insertedID.(primitive.ObjectID)
-			savedChunks = append(savedChunks, chunk)
-		}
+		// Insert all chunks in batch
+		if len(chunkDocs) > 0 {
+			result, err := scriptAudiosCollection.InsertMany(context.Background(), chunkDocs)
+			if err != nil {
+				respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save script chunks: %v", err))
+				return // Added return here to prevent continuing after error
+			}
 
-		fmt.Printf("✓ Saved %d script chunks to database\n", len(chunkDocs))
+			// Prepare saved chunks with IDs for visual generation
+			for i, insertedID := range result.InsertedIDs {
+				chunk := chunkDocs[i].(ScriptAudio)
+				chunk.ID = insertedID.(primitive.ObjectID)
+				savedChunks = append(savedChunks, chunk)
+			}
+
+			fmt.Printf("✓ Saved %d script chunks to database\n", len(chunkDocs))
+		}
 	}
 
-	if err := yt.generateVoiceOver(script, chunks); err != nil {
+	// Generate voice over using the current chunks (whether new or existing)
+	if err := yt.generateVoiceOver(script, savedChunks); err != nil {
 		fmt.Printf("Warning: Failed to generate audio for chunks: %v\n", err)
 	}
+
 	// Return response with chunks
 	response := map[string]interface{}{
 		"script_id":    path,
 		"total_chunks": len(chunks),
 	}
 
-	w.WriteHeader(http.StatusOK)
+	// Remove the duplicate WriteHeader call - json.NewEncoder will call it
 	json.NewEncoder(w).Encode(response)
 }
 func (yt *YtAutomation) generateSubtitleHandler(w http.ResponseWriter, r *http.Request) {
@@ -636,7 +676,7 @@ func (yt *YtAutomation) generateSubtitleHandler(w http.ResponseWriter, r *http.R
 	}
 
 	srt, err := yt.GenerateSRT(TranscriptPayload{
-		AudioPath: "audio/" + script.OutputFilename,
+		AudioPath: script.FullAudioFile,
 		Language:  "en",
 		OutputSrt: true,
 	})

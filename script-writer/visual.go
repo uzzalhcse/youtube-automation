@@ -147,7 +147,7 @@ func (yt *YtAutomation) saveChunkVisuals(scriptID primitive.ObjectID, chunk Scri
 	return nil
 }
 func (yt *YtAutomation) updateChunkVisualStatus(chunkID primitive.ObjectID, hasVisual bool) {
-	_, err := scriptChunksCollection.UpdateOne(
+	_, err := scriptAudiosCollection.UpdateOne(
 		context.Background(),
 		bson.M{"_id": chunkID},
 		bson.M{"$set": bson.M{"has_visual": hasVisual}},

@@ -48,6 +48,7 @@ type Script struct {
 	FullScript    string         `bson:"full_script" json:"full_script"`
 	MetaTag       string         `bson:"meta_tag" json:"meta_tag"`
 	SRT           string         `bson:"srt" json:"srt"` // SRT content for subtitles
+	FullAudioFile string         `bson:"full_audio_file,omitempty" json:"full_audio_file,omitempty"`
 
 	// Keep file references for backward compatibility (optional)
 	OutputFolder    string `bson:"output_folder,omitempty" json:"output_folder,omitempty"`

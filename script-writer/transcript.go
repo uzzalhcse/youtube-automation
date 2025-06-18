@@ -70,8 +70,9 @@ func (yt *YtAutomation) callTranscriptAPI(payload TranscriptPayload) (string, er
 		return "", fmt.Errorf("closing form writer: %w", err)
 	}
 
+	url := fmt.Sprintf("%s/transcribe", os.Getenv("TRANSCRIPT_SERVER_API_URL"))
 	// Create the HTTP request
-	req, err := http.NewRequest("POST", baseURL, &requestBody)
+	req, err := http.NewRequest("POST", url, &requestBody)
 	if err != nil {
 		return "", fmt.Errorf("creating request: %w", err)
 	}
