@@ -1,23 +1,20 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+	"net/http"
 	"strings"
-)
-
-const (
-	outlineTemplateFile   = "outline_template.txt"
-	scriptTemplateFile    = "script_template.txt"
-	hookIntroTemplateFile = "hook_intro_template.txt"
+	"time"
 )
 
 // TemplateService manages template loading and processing
 type TemplateService struct {
-	outlineTemplate   string
-	scriptTemplate    string
-	hookIntroTemplate string
 }
 
 // NewTemplateService creates a new template service
@@ -25,50 +22,66 @@ func NewTemplateService() *TemplateService {
 	return &TemplateService{}
 }
 
-// LoadAllTemplates loads all required templates
-func (t *TemplateService) LoadAllTemplates() error {
-	templates := map[string]*string{
-		outlineTemplateFile:   &t.outlineTemplate,
-		scriptTemplateFile:    &t.scriptTemplate,
-		hookIntroTemplateFile: &t.hookIntroTemplate,
-	}
+func (t *TemplateService) getTemplateByType(templateType string) (*Template, error) {
+	ctx := context.Background()
 
-	for filename, templatePtr := range templates {
-		content, err := t.loadTemplate(filename)
-		if err != nil {
-			return fmt.Errorf("loading template %s: %w", filename, err)
-		}
-		*templatePtr = content
-		fmt.Printf("✓ %s loaded\n", filename)
-	}
+	var template Template
+	err := templatesCollection.FindOne(ctx, bson.M{
+		"type":      templateType,
+		"is_active": true,
+	}).Decode(&template)
 
-	return nil
-}
-
-func (t *TemplateService) loadTemplate(filename string) (string, error) {
-	data, err := os.ReadFile(filename)
 	if err != nil {
-		return "", fmt.Errorf("reading template file %s: %w", filename, err)
+		return nil, fmt.Errorf("template not found for type %s: %w", templateType, err)
 	}
-	return string(data), nil
+
+	return &template, nil
 }
 
-func (t *TemplateService) GetOutlineTemplate(topic string) string {
-	return strings.Replace(t.outlineTemplate, "[TOPIC]", topic, -1)
+func (t *TemplateService) GetOutlineTemplate(topic string) (string, error) {
+	template, err := t.getTemplateByType("outline")
+	if err != nil {
+		return "", err
+	}
+	return strings.Replace(template.Content, "[TOPIC]", topic, -1), nil
 }
 
-// GetScriptTemplate returns the script template
-func (t *TemplateService) GetScriptTemplate() string {
-	return t.scriptTemplate
+func (t *TemplateService) GetScriptTemplate() (string, error) {
+	template, err := t.getTemplateByType("script")
+	if err != nil {
+		return "", err
+	}
+	return template.Content, nil
 }
 
-// GetHookIntroTemplate returns the hook and introduction template
-func (t *TemplateService) GetHookIntroTemplate() string {
-	return t.hookIntroTemplate
+func (t *TemplateService) GetHookIntroTemplate() (string, error) {
+	template, err := t.getTemplateByType("hook_intro")
+	if err != nil {
+		return "", err
+	}
+	return template.Content, nil
 }
 
-func (t *TemplateService) BuildOutlinePrompt(topic string, sectionCount int) string {
-	template := t.GetOutlineTemplate(topic)
+func (t *TemplateService) GetMetaTagTemplate() (string, error) {
+	template, err := t.getTemplateByType("meta_tag")
+	if err != nil {
+		return "", err
+	}
+	return template.Content, nil
+}
+
+func (t *TemplateService) GetVisualGuidanceTemplate() (string, error) {
+	template, err := t.getTemplateByType("visual_guidance")
+	if err != nil {
+		return "", err
+	}
+	return template.Content, nil
+}
+func (t *TemplateService) BuildOutlinePrompt(topic string, sectionCount int) (string, error) {
+	template, err := t.GetOutlineTemplate(topic)
+	if err != nil {
+		return "", err
+	}
 
 	return fmt.Sprintf(`%s
 
@@ -80,10 +93,15 @@ IMPORTANT REQUIREMENTS:
 Topic: %s
 
 Please provide the outline following the template specifications exactly.`,
-		template, sectionCount, topic)
+		template, sectionCount, topic), nil
 }
 
-func (t *TemplateService) BuildHookIntroPrompt(session *ScriptSession) string {
+func (t *TemplateService) BuildHookIntroPrompt(session *ScriptSession) (string, error) {
+	template, err := t.GetHookIntroTemplate()
+	if err != nil {
+		return "", err
+	}
+
 	return fmt.Sprintf(`%s
 
 CONTEXT:
@@ -93,61 +111,114 @@ CONTEXT:
 REQUIREMENTS:
 **Hook & Introduction (%d words):**
  - Start with a relatable scenario, question, concern, or statement to hook the audience (e.g., 'Have you ever felt like your energy is fading faster than it used to?', "Tired of waking up with painful leg cramps?").  
- - Briefly introduce the topic and explain why it’s important for seniors.  
- - Mention what the video will cover (e.g., 'In this video, we’ll go over 5 simple habits to boost your energy and feel younger than ever!').  
+ - Briefly introduce the topic and explain why it's important for seniors.  
+ - Mention what the video will cover (e.g., 'In this video, we'll go over 5 simple habits to boost your energy and feel younger than ever!').  
  - End with a call to action, Ask them to like the video and subscribe to the channel for more helpful content.
  - Create smooth transition to main content.
  - Maintain consistency with the hook's tone.
 
 Please write the section now, Without labeled like "Hook & Introduction:" Just continue.`,
-		t.GetHookIntroTemplate(), session.Outline, session.Config.Topic, session.Config.channel.Settings.WordLimitForHookIntro)
+		template, session.Outline, session.Config.Topic, session.Config.channel.Settings.WordLimitForHookIntro), nil
 }
 
-// BuildMetaTagPrompt creates a description,tags and thumbnail statement prompt
-func (t *TemplateService) BuildMetaTagPrompt(session *ScriptSession) string {
-	return fmt.Sprintf(`Create a Seo friendly description and tags for the video based on the outline and topic.
-The description should be 150-160 words and the tags should be 10-15 tags (comma seperated).
-Also create a thumbnail statement .
+func (t *TemplateService) BuildMetaTagPrompt(session *ScriptSession) (string, error) {
+	template, err := t.GetMetaTagTemplate()
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf(`%s
 
 CONTEXT:
 - Outline: %s
 - Topic: %s
 
-thumbnail statement REQUIREMENTS:
-Create a short, attention-grabbing thumbnail statement for a YouTube video targeting seniors aged 60 and above. The statement should align with the following video title provided by the user:
-	The statement must:
-	Be concise and impactful (10-15 words maximum).
-	Include a hook to grab attention (e.g., a surprising fact, a personal story, or a bold claim).
-	Promise value or a solution to a problem (e.g., 'Do this to live longer,' 'Avoid these mistakes').
-	Use a conversational and engaging tone, as if speaking directly to the viewer.
-	Reflect the key message of the video title.
-Examples for Inspiration:
-	Title: Walk Less and Live to 90 – 5 Powerful Alternatives for Longevity and Health
-	Statement: Walk less and you'll live to 90. Instead, do this!
-	Title: 7 Signs That Predict How Long You’ll Live After 70 Scientifically Proven!
-	Statement: How long can you live after 70: You can tell by looking at this sign in you
-	Title: Why I Regret Moving into a Nursing Home – 6 Hard Truths You Must Know!
-	Statement: I'm 82. I regret moving into a nursing home. Here's why
-	Title: 5 Signs an Elderly Person May Be in Their Final Year – Subtle Warnings You Shouldn’t Ignore
-	Statement: 5 signs elderly people show a year before they die
-	Title: 71 Year Old Man Died in His Sleep 4 Bedtime Habits You Must Avoid After 70!
-	Statement: A 71-year-old man died in his sleep last night. Avoid these 4 bedtime habits after 70!
-	Title: 6 Essential Vitamins to Keep Your Legs Strong in Old Age Even at 94!
-	Statement: I'm 94 years old and have legs of steel: just 1 tablespoon a day
-	Title: Doctor’s Warning: Why Walking Too Much After 70 Can Accelerate Aging & What to Do Instead
-	Statement: Doctors warn: After 70, walk less and focus on these 5 things
-User-Specified Title:
-	The user will provide the video title. For example:
-	'5 Simple Habits to Boost Your Energy After 60.'
-	'How to Avoid Memory Loss After 70 – 6 Proven Tips.'
-	'Why Walking Too Much After 70 Can Accelerate Aging & What to Do Instead.'
-	Important Note:
-	The statement should be short, engaging, and directly tied to the video title.
-	Avoid generic or vague statements. Focus on creating a strong hook and clear value proposition.
-
-
 Please write the section now, Without any labeled. Just continue.`,
-		session.Outline, session.Config.Topic)
+		template, session.Outline, session.Config.Topic), nil
+}
+
+// 8. Add REST API handlers for template management
+func (yt *YtAutomation) createTemplateHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != "POST" {
+		respondWithError(w, http.StatusMethodNotAllowed, "Method not allowed. Use POST.")
+		return
+	}
+
+	var req TemplateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid JSON request body")
+		return
+	}
+
+	// Validate request
+	if strings.TrimSpace(req.Name) == "" {
+		respondWithError(w, http.StatusBadRequest, "Template name cannot be empty")
+		return
+	}
+	if strings.TrimSpace(req.Type) == "" {
+		respondWithError(w, http.StatusBadRequest, "Template type cannot be empty")
+		return
+	}
+	if strings.TrimSpace(req.Content) == "" {
+		respondWithError(w, http.StatusBadRequest, "Template content cannot be empty")
+		return
+	}
+
+	// Validate template type
+	validTypes := []string{"outline", "script", "hook_intro", "meta_tag", "visual_guidance"}
+	isValidType := false
+	for _, validType := range validTypes {
+		if req.Type == validType {
+			isValidType = true
+			break
+		}
+	}
+	if !isValidType {
+		respondWithError(w, http.StatusBadRequest, "Invalid template type. Must be one of: outline, script, hook_intro, meta_tag, visual_guidance")
+		return
+	}
+
+	template := Template{
+		Name:        strings.TrimSpace(req.Name),
+		Type:        strings.TrimSpace(req.Type),
+		Content:     strings.TrimSpace(req.Content),
+		Description: strings.TrimSpace(req.Description),
+		IsActive:    true,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+		Version:     1,
+	}
+
+	result, err := templatesCollection.InsertOne(context.Background(), template)
+	if err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			respondWithError(w, http.StatusConflict, "Template with this name and type already exists")
+			return
+		}
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to create template: %v", err))
+		return
+	}
+
+	template.ID = result.InsertedID.(primitive.ObjectID)
+
+	response := TemplateResponse{
+		Success: true,
+		Message: "Template created successfully",
+		Data:    &template,
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(response)
 }
 
 // BuildSectionPrompt creates a context-aware section prompt
@@ -263,4 +334,174 @@ Now here is the .srt file:
 	}
 
 	return visualPrompts, nil
+}
+func (yt *YtAutomation) getTemplatesHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	templateType := r.URL.Query().Get("type")
+
+	filter := bson.M{"is_active": true}
+	if templateType != "" {
+		filter["type"] = templateType
+	}
+
+	cursor, err := templatesCollection.Find(
+		context.Background(),
+		filter,
+		options.Find().SetSort(bson.D{{"type", 1}, {"name", 1}}),
+	)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Database error: %v", err))
+		return
+	}
+	defer cursor.Close(context.Background())
+
+	var templates []Template
+	if err = cursor.All(context.Background(), &templates); err != nil {
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error decoding templates: %v", err))
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"data":    templates,
+		"count":   len(templates),
+	})
+}
+
+func (yt *YtAutomation) updateTemplateHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "PUT, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != "PUT" {
+		respondWithError(w, http.StatusMethodNotAllowed, "Method not allowed. Use PUT.")
+		return
+	}
+
+	// Extract template ID from URL
+	path := strings.TrimPrefix(r.URL.Path, "/templates/")
+	if path == "" {
+		respondWithError(w, http.StatusBadRequest, "Template ID is required")
+		return
+	}
+
+	objectID, err := primitive.ObjectIDFromHex(path)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid template ID format")
+		return
+	}
+
+	var req TemplateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid JSON request body")
+		return
+	}
+
+	updateData := bson.M{
+		"updated_at": time.Now(),
+		"$inc":       bson.M{"version": 1},
+	}
+
+	if strings.TrimSpace(req.Name) != "" {
+		updateData["name"] = strings.TrimSpace(req.Name)
+	}
+	if strings.TrimSpace(req.Content) != "" {
+		updateData["content"] = strings.TrimSpace(req.Content)
+	}
+	if strings.TrimSpace(req.Description) != "" {
+		updateData["description"] = strings.TrimSpace(req.Description)
+	}
+
+	result, err := templatesCollection.UpdateOne(
+		context.Background(),
+		bson.M{"_id": objectID},
+		bson.M{"$set": updateData},
+	)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to update template: %v", err))
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		respondWithError(w, http.StatusNotFound, "Template not found")
+		return
+	}
+
+	// Fetch updated template
+	var updatedTemplate Template
+	err = templatesCollection.FindOne(context.Background(), bson.M{"_id": objectID}).Decode(&updatedTemplate)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to fetch updated template: %v", err))
+		return
+	}
+
+	response := TemplateResponse{
+		Success: true,
+		Message: "Template updated successfully",
+		Data:    &updatedTemplate,
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
+}
+
+func (yt *YtAutomation) deleteTemplateHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != "DELETE" {
+		respondWithError(w, http.StatusMethodNotAllowed, "Method not allowed. Use DELETE.")
+		return
+	}
+
+	// Extract template ID from URL
+	path := strings.TrimPrefix(r.URL.Path, "/templates/")
+	if path == "" {
+		respondWithError(w, http.StatusBadRequest, "Template ID is required")
+		return
+	}
+
+	objectID, err := primitive.ObjectIDFromHex(path)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid template ID format")
+		return
+	}
+
+	// Soft delete by setting is_active to false
+	result, err := templatesCollection.UpdateOne(
+		context.Background(),
+		bson.M{"_id": objectID},
+		bson.M{"$set": bson.M{"is_active": false, "updated_at": time.Now()}},
+	)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to delete template: %v", err))
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		respondWithError(w, http.StatusNotFound, "Template not found")
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "Template deleted successfully",
+	})
 }

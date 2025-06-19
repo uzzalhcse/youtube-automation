@@ -117,7 +117,10 @@ func (yt *YtAutomation) GenerateCompleteScript(config *ScriptConfig, scriptID pr
 func (yt *YtAutomation) generateOutline(session *ScriptSession, sectionCount int) error {
 	fmt.Println("Generating outline...")
 
-	prompt := yt.templateService.BuildOutlinePrompt(session.Config.Topic, sectionCount)
+	prompt, err := yt.templateService.BuildOutlinePrompt(session.Config.Topic, sectionCount)
+	if err != nil {
+		return fmt.Errorf("building outline prompt: %w", err)
+	}
 	response, err := yt.geminiService.GenerateContent(prompt)
 	if err != nil {
 		return err
@@ -158,7 +161,10 @@ func (yt *YtAutomation) generateOutline(session *ScriptSession, sectionCount int
 func (yt *YtAutomation) generateHookAndIntroduction(session *ScriptSession) error {
 	fmt.Println("Generating Hook and Introduction...")
 
-	prompt := yt.templateService.BuildHookIntroPrompt(session)
+	prompt, err := yt.templateService.BuildHookIntroPrompt(session)
+	if err != nil {
+		return fmt.Errorf("building hook intro prompt: %w", err)
+	}
 	response, err := yt.geminiService.GenerateContextAwareContent(session, prompt)
 	if err != nil {
 		return err
@@ -185,7 +191,10 @@ func (yt *YtAutomation) generateHookAndIntroduction(session *ScriptSession) erro
 func (yt *YtAutomation) generateMetaTag(session *ScriptSession) error {
 	fmt.Println("Generating Meta Tags (Description, Tags, and Thumbnail Statement)...")
 
-	prompt := yt.templateService.BuildMetaTagPrompt(session)
+	prompt, err := yt.templateService.BuildMetaTagPrompt(session)
+	if err != nil {
+		return fmt.Errorf("building meta tag prompt: %w", err)
+	}
 	response, err := yt.geminiService.GenerateContextAwareContent(session, prompt)
 	if err != nil {
 		return err

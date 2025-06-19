@@ -32,6 +32,7 @@ var (
 	scriptSrtCollection    *mongo.Collection
 	chunkVisualsCollection *mongo.Collection
 	videoStatusCollection  *mongo.Collection
+	templatesCollection    *mongo.Collection
 )
 
 const (
@@ -109,10 +110,7 @@ func main() {
 	yt := NewYtAutomation(mClient, templateService, geminiService, httpConfig)
 
 	defer yt.mongoClient.Disconnect(context.Background())
-	// Load templates
-	if err := templateService.LoadAllTemplates(); err != nil {
-		log.Fatalf("error loading templates: %v", err)
-	}
+
 	// Setup HTTP routes
 	http.HandleFunc("/generate-script", yt.generateScriptHandler) // step 1
 	http.HandleFunc("/scripts/", yt.getScriptStatusHandler)
@@ -131,6 +129,26 @@ func main() {
 			yt.getChannelInfoHandler(w, r)
 		}
 	})
+	http.HandleFunc("/templates", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "GET":
+			yt.getTemplatesHandler(w, r)
+		case "POST":
+			yt.createTemplateHandler(w, r)
+		default:
+			respondWithError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	})
+	http.HandleFunc("/templates/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case "PUT":
+			yt.updateTemplateHandler(w, r)
+		case "DELETE":
+			yt.deleteTemplateHandler(w, r)
+		default:
+			respondWithError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		}
+	})
 	// Start server
 	port := getPort()
 	fmt.Printf("=== Wisderly YouTube Script Generator API ===\n")
@@ -143,6 +161,8 @@ func main() {
 	fmt.Printf("  GET  /channels/{name}/scripts   - Get channel scripts\n")
 	fmt.Printf("  GET  /channels/{name}           - Get channel info\n")
 	fmt.Printf("  GET  /health                    - Health check\n")
+	fmt.Printf("  GET/POST /templates              - Manage templates\n")
+	fmt.Printf("  PUT/DELETE /templates/{id}       - Update/Delete template\n")
 	fmt.Println(strings.Repeat("=", 50))
 
 	log.Fatal(http.ListenAndServe(":"+port, nil))
@@ -181,14 +201,118 @@ func initializeMongoDB() (*mongo.Client, error) {
 	scriptSrtCollection = database.Collection("script_srt")
 	chunkVisualsCollection = database.Collection("chunk_visuals")
 	videoStatusCollection = database.Collection("script_videos")
+	templatesCollection = database.Collection("templates")
 
 	// Create indexes
 	if err := createIndexes(); err != nil {
 		return nil, fmt.Errorf("failed to create indexes: %v", err)
 	}
+	// Add template indexes in createIndexes
+	if err := createTemplateIndexes(); err != nil {
+		return nil, fmt.Errorf("failed to create template indexes: %v", err)
+	}
 
+	// Initialize default templates if none exist
+	if err := initializeDefaultTemplates(); err != nil {
+		return nil, fmt.Errorf("failed to initialize default templates: %v", err)
+	}
 	fmt.Println("✓ MongoDB connected successfully")
 	return client, nil
+}
+func createTemplateIndexes() error {
+	ctx := context.Background()
+
+	_, err := templatesCollection.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys:    bson.D{{"name", 1}, {"type", 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys: bson.D{{"type", 1}, {"is_active", 1}},
+		},
+	})
+	return err
+}
+func initializeDefaultTemplates() error {
+	ctx := context.Background()
+
+	// Check if templates exist
+	count, err := templatesCollection.CountDocuments(ctx, bson.M{})
+	if err != nil {
+		return err
+	}
+
+	if count > 0 {
+		fmt.Println("✓ Templates already exist in database")
+		return nil
+	}
+
+	// Default templates content
+	defaultTemplates := []Template{
+		{
+			Name:        "default_outline",
+			Type:        "outline",
+			Content:     `Create a comprehensive outline for a YouTube video about [TOPIC]. Structure it with clear, engaging bullet points that will guide script writing.`,
+			Description: "Default outline template for YouTube videos",
+			IsActive:    true,
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+			Version:     1,
+		},
+		{
+			Name:        "default_script",
+			Type:        "script",
+			Content:     `Write a compelling YouTube script section based on the provided outline point. Make it engaging and informative for the target audience.`,
+			Description: "Default script generation template",
+			IsActive:    true,
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+			Version:     1,
+		},
+		{
+			Name:        "default_hook_intro",
+			Type:        "hook_intro",
+			Content:     `Create an engaging hook and introduction for a YouTube video. Start with a compelling question or statement that grabs attention immediately.`,
+			Description: "Default hook and introduction template",
+			IsActive:    true,
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+			Version:     1,
+		},
+		{
+			Name:        "default_meta_tag",
+			Type:        "meta_tag",
+			Content:     `Generate SEO-friendly description, tags, and thumbnail statement for the YouTube video based on the content.`,
+			Description: "Default meta tag and description template",
+			IsActive:    true,
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+			Version:     1,
+		},
+		{
+			Name:        "default_visual_guidance",
+			Type:        "visual_guidance",
+			Content:     `Create visual guidance descriptions for video editing based on the script content. Focus on senior-friendly aesthetics.`,
+			Description: "Default visual guidance template",
+			IsActive:    true,
+			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
+			Version:     1,
+		},
+	}
+
+	var docs []interface{}
+	for _, template := range defaultTemplates {
+		docs = append(docs, template)
+	}
+
+	_, err = templatesCollection.InsertMany(ctx, docs)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("✓ Initialized %d default templates\n", len(defaultTemplates))
+	return nil
 }
 
 func createIndexes() error {

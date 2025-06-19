@@ -190,3 +190,28 @@ type KenBurnsConfig struct {
 	ScaleWidth int     `json:"scale_width"` // scale to this width before zooming (e.g., 8000)
 	Direction  string  `json:"direction"`   // "zoom_in", "zoom_out", "pan_left", "pan_right"
 }
+type Template struct {
+	ID          primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	Name        string             `bson:"name" json:"name"`
+	Type        string             `bson:"type" json:"type"` // outline, script, hook_intro, visual_guidance, meta_tag
+	Content     string             `bson:"content" json:"content"`
+	Description string             `bson:"description,omitempty" json:"description,omitempty"`
+	IsActive    bool               `bson:"is_active" json:"is_active"`
+	CreatedAt   time.Time          `bson:"created_at" json:"created_at"`
+	UpdatedAt   time.Time          `bson:"updated_at" json:"updated_at"`
+	Version     int                `bson:"version" json:"version"`
+}
+
+type TemplateRequest struct {
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Content     string `json:"content"`
+	Description string `json:"description,omitempty"`
+}
+
+type TemplateResponse struct {
+	Success bool      `json:"success"`
+	Message string    `json:"message,omitempty"`
+	Error   string    `json:"error,omitempty"`
+	Data    *Template `json:"data,omitempty"`
+}
