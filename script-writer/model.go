@@ -91,8 +91,16 @@ type ScriptAudio struct {
 	ChunkIndex int                `bson:"chunk_index" json:"chunk_index"`
 	Content    string             `bson:"content" json:"content"`
 	CharCount  int                `bson:"char_count" json:"char_count"`
-	HasVisual  bool               `bson:"has_visual" json:"has_visual"`                     // need to remove or mode main script collection
+	HasVisual  bool               `bson:"has_visual" json:"has_visual"`                     // need to remove or move main script collection
 	AudioFile  string             `bson:"audio_file,omitempty" json:"audio_file,omitempty"` // Optional audio file reference
+	CreatedAt  time.Time          `bson:"created_at" json:"created_at"`
+}
+type ScriptSrt struct {
+	ID         primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	ScriptID   primitive.ObjectID `bson:"script_id" json:"script_id"`
+	ChunkIndex int                `bson:"chunk_index" json:"chunk_index"`
+	Content    string             `bson:"content" json:"content"`
+	CharCount  int                `bson:"char_count" json:"char_count"`
 	CreatedAt  time.Time          `bson:"created_at" json:"created_at"`
 }
 type ChunkVisual struct {

@@ -353,11 +353,11 @@ func (yt *YtAutomation) saveScriptChunks(scriptID primitive.ObjectID, fullScript
 		//	}
 		//}()
 		// Generate visuals for all chunks
-		go func() {
-			if err := yt.generateVisualsForChunks(scriptID, savedChunks); err != nil {
-				fmt.Printf("Warning: Failed to generate visuals for chunks: %v\n", err)
-			}
-		}()
+		//go func() {
+		//	if err := yt.generateVisualPromptForChunks(scriptID, savedChunks); err != nil {
+		//		fmt.Printf("Warning: Failed to generate visuals for chunks: %v\n", err)
+		//	}
+		//}()
 	}
 
 	return nil

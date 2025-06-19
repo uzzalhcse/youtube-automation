@@ -10,25 +10,22 @@ import (
 	"time"
 )
 
-func (yt *YtAutomation) generateVisualsForChunks(scriptID primitive.ObjectID, chunks []ScriptAudio) error {
-	fmt.Printf("🎨 Starting visual generation for %d chunks...\n", len(chunks))
+func (yt *YtAutomation) generateVisualPromptForChunks(scriptID primitive.ObjectID, chunks []ScriptSrt) error {
+	fmt.Printf("🎨 Starting visual prompt generation for %d chunks...\n", len(chunks))
 
 	for i, chunk := range chunks {
-		fmt.Printf("Generating visual for chunk %d/%d...\n", i+1, len(chunks))
-
-		// Create SRT-like format for this chunk
-		srtContent := yt.createSRTFromChunk(chunk, i)
+		fmt.Printf("Generating visual prompt for chunk %d/%d...\n", i+1, len(chunks))
 
 		// Generate visual prompt using Gemini
-		visualPrompts, err := yt.generateVisualPrompts(srtContent)
+		visualPrompts, err := yt.generateVisualPrompts(chunk.Content)
 		if err != nil {
-			fmt.Printf("Warning: Failed to generate visual for chunk %d: %v\n", chunk.ChunkIndex, err)
+			fmt.Printf("Warning: Failed to generate prompt visual for chunk %d: %v\n", chunk.ChunkIndex, err)
 			continue
 		}
 
 		// Save visual prompts to database
 		if err := yt.saveChunkVisuals(scriptID, chunk, visualPrompts); err != nil {
-			fmt.Printf("Warning: Failed to save visuals for chunk %d: %v\n", chunk.ChunkIndex, err)
+			fmt.Printf("Warning: Failed to save visuals prompt for chunk %d: %v\n", chunk.ChunkIndex, err)
 			continue
 		}
 
@@ -39,23 +36,9 @@ func (yt *YtAutomation) generateVisualsForChunks(scriptID primitive.ObjectID, ch
 		time.Sleep(1 * time.Second)
 	}
 
-	fmt.Printf("✓ Completed visual generation for all chunks\n")
+	fmt.Printf("✓ Completed visual prompt generation for all chunks\n")
 	return nil
 }
-
-func (yt *YtAutomation) createSRTFromChunk(chunk ScriptAudio, index int) string {
-	// Create a simple SRT format for the chunk
-	// Estimate timing based on chunk length (average reading speed)
-	wordsCount := len(strings.Fields(chunk.Content))
-	durationSeconds := max(3, wordsCount/3) // ~3 words per second reading speed
-
-	startTime := fmt.Sprintf("00:00:%02d,000", index*durationSeconds)
-	endTime := fmt.Sprintf("00:00:%02d,000", (index+1)*durationSeconds)
-
-	return fmt.Sprintf("%d\n%s --> %s\n%s\n\n",
-		index+1, startTime, endTime, chunk.Content)
-}
-
 func (yt *YtAutomation) generateVisualPrompts(srtContent string) ([]VisualPromptResponse, error) {
 	masterPrompt := `You are a visual narration mapping assistant.
 I will give you .srt subtitle data. Your job is to output a dense series of visual prompts that match each key beat of the spoken narration.
@@ -117,7 +100,7 @@ Now here is the .srt file:
 
 	return visualPrompts, nil
 }
-func (yt *YtAutomation) saveChunkVisuals(scriptID primitive.ObjectID, chunk ScriptAudio, visualPrompts []VisualPromptResponse) error {
+func (yt *YtAutomation) saveChunkVisuals(scriptID primitive.ObjectID, chunk ScriptSrt, visualPrompts []VisualPromptResponse) error {
 	// Check if collection is initialized
 	if chunkVisualsCollection == nil {
 		return fmt.Errorf("chunk visuals collection is not initialized")

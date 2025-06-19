@@ -28,6 +28,7 @@ var (
 	channelsCollection     *mongo.Collection
 	scriptsCollection      *mongo.Collection
 	scriptAudiosCollection *mongo.Collection
+	scriptSrtCollection    *mongo.Collection
 	chunkVisualsCollection *mongo.Collection
 )
 
@@ -90,10 +91,10 @@ func main() {
 	// Setup HTTP routes
 	http.HandleFunc("/generate-script", yt.generateScriptHandler) // step 1
 	http.HandleFunc("/scripts/", yt.getScriptStatusHandler)
-	http.HandleFunc("/generate-audio/", yt.generateAudioHandler)       // step 2
-	http.HandleFunc("/generate-subtitle/", yt.generateSubtitleHandler) // step 3
-	http.HandleFunc("/generate-visual/", yt.generateVisualHandler)     // step 4
-	http.HandleFunc("/scripts-chunks/", yt.getScriptChunksHandler)
+	http.HandleFunc("/generate-audio/", yt.generateAudioHandler)                // step 2
+	http.HandleFunc("/generate-subtitle/", yt.generateSubtitleHandler)          // step 3
+	http.HandleFunc("/generate-visual-prompt/", yt.generateVisualPromptHandler) // step 4
+	http.HandleFunc("/scripts-chunks/", yt.getScriptAudiosHandler)
 	http.HandleFunc("/health", yt.healthHandler)
 	http.HandleFunc("/channels/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -150,6 +151,7 @@ func initializeMongoDB() (*mongo.Client, error) {
 	channelsCollection = database.Collection("channels")
 	scriptsCollection = database.Collection("scripts")
 	scriptAudiosCollection = database.Collection("script_audios")
+	scriptSrtCollection = database.Collection("script_srt")
 	chunkVisualsCollection = database.Collection("chunk_visuals") // ADD THIS LINE
 
 	// Create indexes
@@ -179,8 +181,21 @@ func createIndexes() error {
 	if err != nil {
 		return err
 	}
-	// Index for script_chunks
+	// Index for script_audios
 	_, err = scriptAudiosCollection.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys:    bson.D{{"script_id", 1}, {"chunk_index", 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys: bson.D{{"script_id", 1}},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	// Index for script_srt
+	_, err = scriptSrtCollection.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{
 			Keys:    bson.D{{"script_id", 1}, {"chunk_index", 1}},
 			Options: options.Index().SetUnique(true),
@@ -487,7 +502,7 @@ func (yt *YtAutomation) getScriptStatusHandler(w http.ResponseWriter, r *http.Re
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(script)
 }
-func (yt *YtAutomation) getScriptChunksHandler(w http.ResponseWriter, r *http.Request) {
+func (yt *YtAutomation) getScriptAudiosHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
@@ -638,13 +653,16 @@ func (yt *YtAutomation) generateAudioHandler(w http.ResponseWriter, r *http.Requ
 	}
 
 	// Return response with chunks
-	response := map[string]interface{}{
+	data := map[string]interface{}{
 		"script_id":    path,
 		"total_chunks": len(chunks),
 	}
 
 	// Remove the duplicate WriteHeader call - json.NewEncoder will call it
-	json.NewEncoder(w).Encode(response)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message": "Voice generation completed",
+		"data":    data,
+	})
 }
 func (yt *YtAutomation) generateSubtitleHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -691,21 +709,62 @@ func (yt *YtAutomation) generateSubtitleHandler(w http.ResponseWriter, r *http.R
 	if err != nil {
 		fmt.Printf("Warning: Failed to save chunk audio file path: %v\n", err)
 	}
-	// Return response with chunks
-	response := map[string]interface{}{
-		"script_id": path,
-		"message":   "Subtitle generation completed",
+
+	// Split the script into chunks
+	chunks, err := splitSRTByDuration(srt, 1*time.Minute)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to split SRT into chunks: %v", err))
+		return
+	}
+	// Prepare chunk documents for batch insert
+	var chunkDocs []interface{}
+	var savedChunks []ScriptSrt
+
+	for i, chunk := range chunks {
+		chunkDoc := ScriptSrt{
+			ScriptID:   script.ID,
+			ChunkIndex: i + 1,
+			Content:    chunk,
+			CharCount:  len(chunk),
+			CreatedAt:  time.Now(),
+		}
+		chunkDocs = append(chunkDocs, chunkDoc)
 	}
 
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	// Insert all chunks in batch
+	if len(chunkDocs) > 0 {
+		result, err := scriptSrtCollection.InsertMany(context.Background(), chunkDocs)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save script chunks: %w", err))
+		}
+
+		// Prepare saved chunks with IDs for visual generation
+		for i, insertedID := range result.InsertedIDs {
+			chunk := chunkDocs[i].(ScriptSrt)
+			chunk.ID = insertedID.(primitive.ObjectID)
+			savedChunks = append(savedChunks, chunk)
+		}
+
+		fmt.Printf("✓ Saved %d script srt chunks to database\n", len(chunkDocs))
+	}
+
+	// Return response with chunks
+	data := map[string]interface{}{
+		"script_id":    path,
+		"total_chunks": len(chunks),
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message": "Subtitle generation completed",
+		"data":    data,
+	})
 }
-func (yt *YtAutomation) generateVisualHandler(w http.ResponseWriter, r *http.Request) {
+func (yt *YtAutomation) generateVisualPromptHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	// Extract script ID from URL path (/generate-visual/{scriptID})
-	path := strings.TrimPrefix(r.URL.Path, "/generate-visual/")
+	path := strings.TrimPrefix(r.URL.Path, "/generate-visual-prompt/")
 	if path == "" {
 		respondWithError(w, http.StatusBadRequest, "Script ID is required")
 		return
@@ -717,15 +776,66 @@ func (yt *YtAutomation) generateVisualHandler(w http.ResponseWriter, r *http.Req
 		respondWithError(w, http.StatusBadRequest, "Invalid script ID format")
 		return
 	}
-
-	// TODO: Implement visual generation logic, Generate visual from raw script or srt. yt.generateVisualsForChunks()
-	response := map[string]interface{}{
-		"script_id": path,
-		"objectID":  objectID,
+	var script Script
+	err = scriptsCollection.FindOne(context.Background(), bson.M{"_id": objectID}).Decode(&script)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			respondWithError(w, http.StatusNotFound, "Script not found")
+			return
+		}
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Database error: %v", err))
+		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	// Check if chunks already exist for this script
+	existingCount, err := scriptAudiosCollection.CountDocuments(
+		context.Background(),
+		bson.M{"script_id": objectID},
+	)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error checking existing chunks: %v", err))
+		return
+	}
+	if err := os.MkdirAll(filepath.Join("assets", "audio"), 0755); err != nil {
+		log.Printf("Warning: Failed to create audio directory: %v", err)
+	}
+	var scriptSrtChunks []ScriptSrt
+
+	if existingCount > 0 {
+
+		findOptions := options.Find().SetSort(bson.M{"chunk_index": 1})
+		cursor, err := scriptSrtCollection.Find(
+			context.Background(),
+			bson.M{"script_id": objectID},
+			findOptions,
+		)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error fetching existing chunks: %v", err))
+			return
+		}
+		defer cursor.Close(context.Background())
+
+		if err = cursor.All(context.Background(), &scriptSrtChunks); err != nil {
+			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error decoding existing chunks: %v", err))
+			return
+		}
+	}
+	go func() {
+		if err := yt.generateVisualPromptForChunks(objectID, scriptSrtChunks); err != nil {
+			fmt.Printf("Warning: Failed to generate visuals for chunks: %v\n", err)
+		}
+	}()
+
+	// TODO: Implement visual generation logic, Generate visual from raw script or srt. yt.generateVisualPromptForChunks()
+	// Return response with chunks
+	data := map[string]interface{}{
+		"script_id": path,
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message": "Visual Prompt generation InProgress",
+		"data":    data,
+	})
 }
 func ensureChannelExists(channelName string) {
 	ctx := context.Background()
