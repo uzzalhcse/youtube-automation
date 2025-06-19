@@ -31,6 +31,7 @@ var (
 	scriptAudiosCollection *mongo.Collection
 	scriptSrtCollection    *mongo.Collection
 	chunkVisualsCollection *mongo.Collection
+	videoStatusCollection  *mongo.Collection
 )
 
 const (
@@ -119,6 +120,7 @@ func main() {
 	http.HandleFunc("/generate-subtitle/", yt.generateSubtitleHandler)               // step 3
 	http.HandleFunc("/generate-visual-prompt/", yt.generateVisualPromptHandler)      // step 4
 	http.HandleFunc("/generate-visual-images/", yt.generateVisualImagePromptHandler) // step 5
+	http.HandleFunc("/generate-video/", yt.generateVideoHandler)                     // step 6
 	http.HandleFunc("/scripts-chunks/", yt.getScriptAudiosHandler)
 	http.HandleFunc("/health", yt.healthHandler)
 	http.HandleFunc("/channels/", func(w http.ResponseWriter, r *http.Request) {
@@ -177,7 +179,8 @@ func initializeMongoDB() (*mongo.Client, error) {
 	scriptsCollection = database.Collection("scripts")
 	scriptAudiosCollection = database.Collection("script_audios")
 	scriptSrtCollection = database.Collection("script_srt")
-	chunkVisualsCollection = database.Collection("chunk_visuals") // ADD THIS LINE
+	chunkVisualsCollection = database.Collection("chunk_visuals")
+	videoStatusCollection = database.Collection("script_videos")
 
 	// Create indexes
 	if err := createIndexes(); err != nil {
@@ -932,6 +935,123 @@ func (yt *YtAutomation) generateVisualImagePromptHandler(w http.ResponseWriter, 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"message": "Visual generation InProgress",
 		"data":    data,
+	})
+}
+
+func (yt *YtAutomation) generateVideoHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Handle preflight requests
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != "POST" {
+		respondWithError(w, http.StatusMethodNotAllowed, "Only POST method is allowed")
+		return
+	}
+
+	// Extract script ID from URL path
+	path := strings.TrimPrefix(r.URL.Path, "/generate-video/")
+	if path == "" {
+		respondWithError(w, http.StatusBadRequest, "Script ID is required")
+		return
+	}
+
+	// Validate ObjectID format
+	scriptID, err := primitive.ObjectIDFromHex(path)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid script ID format")
+		return
+	}
+
+	// Fetch script from database
+	script, err := yt.getScript(scriptID)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			respondWithError(w, http.StatusNotFound, "Script not found")
+			return
+		}
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Database error: %v", err))
+		return
+	}
+
+	// Validate script status
+	if script.Status != "completed" {
+		respondWithError(w, http.StatusBadRequest, "Script must be completed before generating video")
+		return
+	}
+
+	// Check for existing video generation in progress
+	existingStatus, err := yt.getVideoGenerationStatus(scriptID)
+	if err == nil && (existingStatus.Status == "pending" || existingStatus.Status == "processing") {
+		respondWithJSON(w, http.StatusOK, map[string]interface{}{
+			"message":    "Video generation already in progress",
+			"status":     existingStatus.Status,
+			"process_id": existingStatus.ProcessID,
+			"progress":   existingStatus.Progress,
+		})
+		return
+	}
+
+	// Fetch chunk visuals
+	chunkVisuals, err := yt.getChunkVisuals(scriptID)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error fetching chunk visuals: %v", err))
+		return
+	}
+
+	if len(chunkVisuals) == 0 {
+		respondWithError(w, http.StatusBadRequest, "No visual chunks found for this script")
+		return
+	}
+
+	// Build video request payload
+	videoRequest, err := yt.buildVideoRequest(script, chunkVisuals)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error building video request: %v", err))
+		return
+	}
+
+	// Create video generation status record
+	status := VideoGenerationStatus{
+		ScriptID:    scriptID,
+		Status:      "pending",
+		RequestData: *videoRequest,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	statusID, err := yt.createVideoGenerationStatus(&status)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error creating status record: %v", err))
+		return
+	}
+
+	// Start video generation asynchronously
+	go func() {
+		err := yt.generateVideoAsync(statusID, videoRequest)
+		if err != nil {
+			fmt.Printf("Error in async video generation: %v\n", err)
+			yt.updateVideoGenerationStatus(statusID, VideoGenerationStatus{
+				Status:    "failed",
+				ErrorMsg:  err.Error(),
+				UpdatedAt: time.Now(),
+			})
+		}
+	}()
+
+	// Return immediate response
+	respondWithJSON(w, http.StatusAccepted, map[string]interface{}{
+		"message":   "Video generation started successfully",
+		"status":    "pending",
+		"script_id": scriptID.Hex(),
+		"status_id": statusID.Hex(),
+		"check_url": fmt.Sprintf("/video-status/%s", statusID.Hex()),
 	})
 }
 func ensureChannelExists(channelName string) {

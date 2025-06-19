@@ -13,12 +13,14 @@ func buildFilterComplexWithCounts(req *VideoRequest, videoInputCount int, audioI
 
 	// Start with background
 	currentVideo := "[0:v]"
+	hasProcessedVideo := false
 
 	// Process images with Ken Burns effect
 	videoInputIndex := 1 // Start from 1 (0 is background)
 
 	for _, img := range req.Images {
 		if (img.Data != "" || img.URL != "") && img.Duration > 0 && videoInputIndex < videoInputCount {
+			hasProcessedVideo = true
 
 			var scaleFilter string
 			var overlayFilter string
@@ -89,13 +91,15 @@ func buildFilterComplexWithCounts(req *VideoRequest, videoInputCount int, audioI
 		}
 	}
 
-	// Process text overlays for scenes (existing logic remains the same)
+	// Process text overlays for scenes
 	sceneIndex := 0
+	hasProcessedText := false
 	for _, scene := range req.Scenes {
 		if scene.Text == "" {
 			continue
 		}
 
+		hasProcessedText = true
 		fontSize := scene.FontSize
 		if fontSize <= 0 {
 			fontSize = 24
@@ -119,6 +123,26 @@ func buildFilterComplexWithCounts(req *VideoRequest, videoInputCount int, audioI
 		sceneIndex++
 	}
 
+	// Ensure we always have a final video output labeled [v]
+	if hasProcessedVideo || hasProcessedText {
+		// If we processed video or text, rename the current output to [v]
+		if len(filters) > 0 {
+			lastFilter := filters[len(filters)-1]
+			// Replace the last output label with [v]
+			if strings.Contains(lastFilter, "[v") {
+				// Find the last bracket pair and replace it
+				lastBracketStart := strings.LastIndex(lastFilter, "[")
+				lastBracketEnd := strings.LastIndex(lastFilter, "]")
+				if lastBracketStart > 0 && lastBracketEnd > lastBracketStart {
+					filters[len(filters)-1] = lastFilter[:lastBracketStart] + "[v]"
+				}
+			}
+		}
+	} else {
+		// If we didn't process any images or text, just copy the background
+		filters = append(filters, "[0:v]copy[v]")
+	}
+
 	// Handle audio mixing (existing logic remains the same)
 	if len(audioInputs) > 0 {
 		if len(audioInputs) == 1 {
@@ -132,7 +156,6 @@ func buildFilterComplexWithCounts(req *VideoRequest, videoInputCount int, audioI
 
 	return strings.Join(filters, ";")
 }
-
 func generateVideo(jobID string, req *VideoRequest) {
 	job := jobs[jobID]
 	job.Status = "processing"
