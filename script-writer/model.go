@@ -109,13 +109,14 @@ type ChunkVisual struct {
 	ChunkID      primitive.ObjectID `bson:"chunk_id" json:"chunk_id"`
 	ChunkIndex   int                `bson:"chunk_index" json:"chunk_index"`
 	Prompt       string             `bson:"prompt" json:"prompt"`
+	PromptIndex  int                `bson:"prompt_index" json:"prompt_index"` // Index of the prompt in the chunk
 	StartTime    string             `bson:"start_time" json:"start_time"`
 	EndTime      string             `bson:"end_time" json:"end_time"`
+	ImagePath    string             `bson:"image_path,omitempty" json:"image_path,omitempty"` // Optional image path
 	Emotion      string             `bson:"emotion" json:"emotion"`
 	SceneConcept string             `bson:"scene_concept" json:"scene_concept"`
 	CreatedAt    time.Time          `bson:"created_at" json:"created_at"`
 }
-
 type VisualPromptResponse struct {
 	Start  string `json:"start"`
 	End    string `json:"end"`

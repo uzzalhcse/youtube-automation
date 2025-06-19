@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -46,9 +47,14 @@ type YtAutomation struct {
 	outlineParser    *OutlineParser
 	elevenLabsClient *elevenlabs.ElevenLabsClient
 	client           *http.Client
+	googleHttpClient *HTTPClient
 }
 
-func NewYtAutomation(mongoClient *mongo.Client, templateService *TemplateService, geminiService *GeminiService) *YtAutomation {
+func NewYtAutomation(mongoClient *mongo.Client, templateService *TemplateService, geminiService *GeminiService, config HttpConfig) *YtAutomation {
+	var rateLimiter *RateLimiter
+	if config.RequestsPerMinute > 0 {
+		rateLimiter = NewRateLimiter(config.RequestsPerMinute)
+	}
 	return &YtAutomation{
 		mongoClient:     mongoClient,
 		templateService: templateService,
@@ -60,6 +66,14 @@ func NewYtAutomation(mongoClient *mongo.Client, templateService *TemplateService
 			Password: os.Getenv("PROXY_PASSWORD"),
 		}),
 		client: &http.Client{Timeout: timeout},
+		googleHttpClient: &HTTPClient{
+			config: config,
+			httpClient: &http.Client{
+				Timeout: config.Timeout,
+			},
+			rng:         rand.New(rand.NewSource(time.Now().UnixNano())),
+			rateLimiter: rateLimiter,
+		},
 	}
 }
 func main() {
@@ -70,7 +84,17 @@ func main() {
 		fmt.Printf("Failed to load environment variables: %v\n", err)
 		os.Exit(1)
 	}
+	httpConfig := LoadConfigFromEnv()
+	// Validate required configuration
+	if httpConfig.AuthToken == "" {
+		log.Fatal("API_AUTH_TOKEN is required. Please set it in your .env file or environment variables.")
+	}
+	// Validate tool selection
+	if httpConfig.Tool != "whisk" && httpConfig.Tool != "imagefx" {
+		log.Fatalf("Invalid tool: %s. Must be 'whisk' or 'imagefx'", httpConfig.Tool)
+	}
 
+	fmt.Printf("Using tool: %s\n", httpConfig.Tool)
 	// Initialize services (same as original logic)
 	templateService = NewTemplateService()
 	geminiService = NewGeminiService(os.Getenv("GEMINI_API_KEY"))
@@ -81,7 +105,7 @@ func main() {
 		log.Fatalf("Failed to initialize MongoDB: %v", err)
 	}
 
-	yt := NewYtAutomation(mClient, templateService, geminiService)
+	yt := NewYtAutomation(mClient, templateService, geminiService, httpConfig)
 
 	defer yt.mongoClient.Disconnect(context.Background())
 	// Load templates
@@ -91,9 +115,10 @@ func main() {
 	// Setup HTTP routes
 	http.HandleFunc("/generate-script", yt.generateScriptHandler) // step 1
 	http.HandleFunc("/scripts/", yt.getScriptStatusHandler)
-	http.HandleFunc("/generate-audio/", yt.generateAudioHandler)                // step 2
-	http.HandleFunc("/generate-subtitle/", yt.generateSubtitleHandler)          // step 3
-	http.HandleFunc("/generate-visual-prompt/", yt.generateVisualPromptHandler) // step 4
+	http.HandleFunc("/generate-audio/", yt.generateAudioHandler)                     // step 2
+	http.HandleFunc("/generate-subtitle/", yt.generateSubtitleHandler)               // step 3
+	http.HandleFunc("/generate-visual-prompt/", yt.generateVisualPromptHandler)      // step 4
+	http.HandleFunc("/generate-visual-images/", yt.generateVisualImagePromptHandler) // step 5
 	http.HandleFunc("/scripts-chunks/", yt.getScriptAudiosHandler)
 	http.HandleFunc("/health", yt.healthHandler)
 	http.HandleFunc("/channels/", func(w http.ResponseWriter, r *http.Request) {
@@ -796,9 +821,7 @@ func (yt *YtAutomation) generateVisualPromptHandler(w http.ResponseWriter, r *ht
 		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error checking existing chunks: %v", err))
 		return
 	}
-	if err := os.MkdirAll(filepath.Join("assets", "audio"), 0755); err != nil {
-		log.Printf("Warning: Failed to create audio directory: %v", err)
-	}
+
 	var scriptSrtChunks []ScriptSrt
 
 	if existingCount > 0 {
@@ -834,6 +857,80 @@ func (yt *YtAutomation) generateVisualPromptHandler(w http.ResponseWriter, r *ht
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"message": "Visual Prompt generation InProgress",
+		"data":    data,
+	})
+}
+func (yt *YtAutomation) generateVisualImagePromptHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	// Extract script ID from URL path (/generate-visual/{scriptID})
+	path := strings.TrimPrefix(r.URL.Path, "/generate-visual-images/")
+	if path == "" {
+		respondWithError(w, http.StatusBadRequest, "Script ID is required")
+		return
+	}
+
+	// Convert to ObjectID
+	objectID, err := primitive.ObjectIDFromHex(path)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid script ID format")
+		return
+	}
+	var script Script
+	err = scriptsCollection.FindOne(context.Background(), bson.M{"_id": objectID}).Decode(&script)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			respondWithError(w, http.StatusNotFound, "Script not found")
+			return
+		}
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Database error: %v", err))
+		return
+	}
+
+	// Check if chunks already exist for this script
+	existingCount, err := chunkVisualsCollection.CountDocuments(
+		context.Background(),
+		bson.M{"script_id": objectID},
+	)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error checking existing chunks: %v", err))
+		return
+	}
+
+	var chunkVisuals []ChunkVisual
+
+	if existingCount > 0 {
+
+		findOptions := options.Find().SetSort(bson.M{"chunk_index": 1})
+		cursor, err := chunkVisualsCollection.Find(
+			context.Background(),
+			bson.M{"script_id": objectID},
+			findOptions,
+		)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error fetching existing chunks: %v", err))
+			return
+		}
+		defer cursor.Close(context.Background())
+
+		if err = cursor.All(context.Background(), &chunkVisuals); err != nil {
+			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error decoding existing chunks: %v", err))
+			return
+		}
+	}
+	go func() {
+		if err := yt.generateVisualImagePromptForChunks(objectID, chunkVisuals); err != nil {
+			fmt.Printf("Warning: Failed to generate visuals for chunks: %v\n", err)
+		}
+	}()
+	// Return response with chunks
+	data := map[string]interface{}{
+		"script_id": path,
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message": "Visual generation InProgress",
 		"data":    data,
 	})
 }

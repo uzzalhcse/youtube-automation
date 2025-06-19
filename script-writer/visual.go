@@ -2,10 +2,11 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"log"
+	"os"
 	"strings"
 	"time"
 )
@@ -39,66 +40,23 @@ func (yt *YtAutomation) generateVisualPromptForChunks(scriptID primitive.ObjectI
 	fmt.Printf("✓ Completed visual prompt generation for all chunks\n")
 	return nil
 }
-func (yt *YtAutomation) generateVisualPrompts(srtContent string) ([]VisualPromptResponse, error) {
-	masterPrompt := `You are a visual narration mapping assistant.
-I will give you .srt subtitle data. Your job is to output a dense series of visual prompts that match each key beat of the spoken narration.
 
-🧠 Visual Chunking Rules:
-New sentence? → Start a new visual unit
-Short line (e.g. <3s or <6 words)? → Merge only if it feels like a continuous idea
-Powerful/emotional words (e.g. "Boom." "Yeah?" "Lazy.") → Give their own visual moment
-Conceptual/emotional shifts? → Start new visual
-If uncertain: Prefer more visuals, not fewer
-⚠️ Avoid merging more than 10 seconds of narration into a single prompt.
+func (yt *YtAutomation) generateVisualImagePromptForChunks(scriptID primitive.ObjectID, chunks []ChunkVisual) error {
+	fmt.Printf("🎨 Starting visual generation for %d chunks...\n", len(chunks))
+	globalOptions := map[string]interface{}{
+		"imageModel":  os.Getenv("IMAGE_MODEL"),
+		"aspectRatio": ASPECT_RATIO,
+	}
+	jobs := yt.CreateJobsFromPrompts(chunks, globalOptions)
 
-🎨 Visual Prompt Template:
-For each chunk, generate a unique visual using this template:
-A hand-drawn cartoon scene with a stick figure in a red scarf. Scene: {scene_concept}. Style: sketchy black-and-white with minimal red accent. Background in soft beige. Emotion: {emotion_or_mood}.
-
-🧠 scene_concept should reflect what's happening or being said (literal, metaphorical, or symbolic).
-💬 emotion_or_mood should capture the tone: hopeful, anxious, dreamy, frustrated, etc.
-
-✅ Output Format:
-IMPORTANT: Return ONLY the JSON array, no markdown formatting, no backticks, no code blocks.
-A JSON array like this:
-[
-  {
-    "start": "00:00:00,000",
-    "end": "00:00:04,940",
-    "prompt": "A stick figure in a red scarf looks at the sky full of clocks and stars, dreaming. Minimalist cartoon style. Mood: hopeful."
-  }
-]
-
-🎯 Target: Output ~1 visual per idea or emotional beat. Do not compress multiple beats into one. If in doubt, split it.
-
-Now here is the .srt file:
-` + srtContent
-
-	response, err := yt.geminiService.GenerateContent(masterPrompt)
+	err := yt.MakeConcurrentRequests(jobs)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate visual prompts: %w", err)
+		log.Printf("Some requests encountered critical errors: %v", err)
+		// Don't exit fatally - let the program complete and show summary
 	}
 
-	// Clean response - remove markdown code blocks if present
-	cleanResponse := strings.TrimSpace(response)
-	if strings.HasPrefix(cleanResponse, "```json") {
-		cleanResponse = strings.TrimPrefix(cleanResponse, "```json")
-	}
-	if strings.HasPrefix(cleanResponse, "```") {
-		cleanResponse = strings.TrimPrefix(cleanResponse, "```")
-	}
-	if strings.HasSuffix(cleanResponse, "```") {
-		cleanResponse = strings.TrimSuffix(cleanResponse, "```")
-	}
-	cleanResponse = strings.TrimSpace(cleanResponse)
-
-	// Parse JSON response
-	var visualPrompts []VisualPromptResponse
-	if err := json.Unmarshal([]byte(cleanResponse), &visualPrompts); err != nil {
-		return nil, fmt.Errorf("failed to parse visual prompts JSON: %w", err)
-	}
-
-	return visualPrompts, nil
+	fmt.Printf("✓ Completed visual generation for all chunks\n")
+	return nil
 }
 func (yt *YtAutomation) saveChunkVisuals(scriptID primitive.ObjectID, chunk ScriptSrt, visualPrompts []VisualPromptResponse) error {
 	// Check if collection is initialized
@@ -107,15 +65,16 @@ func (yt *YtAutomation) saveChunkVisuals(scriptID primitive.ObjectID, chunk Scri
 	}
 
 	var visualDocs []interface{}
-	for _, prompt := range visualPrompts {
+	for i, prompt := range visualPrompts {
 		visualDoc := ChunkVisual{
-			ScriptID:   scriptID,
-			ChunkID:    chunk.ID,
-			ChunkIndex: chunk.ChunkIndex,
-			StartTime:  prompt.Start,
-			EndTime:    prompt.End,
-			Prompt:     prompt.Prompt,
-			CreatedAt:  time.Now(),
+			ScriptID:    scriptID,
+			ChunkID:     chunk.ID,
+			ChunkIndex:  chunk.ChunkIndex,
+			PromptIndex: i,
+			StartTime:   prompt.Start,
+			EndTime:     prompt.End,
+			Prompt:      prompt.Prompt,
+			CreatedAt:   time.Now(),
 		}
 		visualDocs = append(visualDocs, visualDoc)
 	}
