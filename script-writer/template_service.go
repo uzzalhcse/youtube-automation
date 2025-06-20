@@ -210,18 +210,15 @@ func (yt *YtAutomation) generateVisualPromptsWithStyle(srtContent string, script
 		return nil, fmt.Errorf("failed to build visual prompt template: %w", err)
 	}
 
-	finalPrompt := systemPrompt + "\n\n" + userPrompt
-
-	fmt.Println("finalPrompt", finalPrompt)
-	response, err := yt.geminiService.GenerateContent(finalPrompt)
+	// Use the new method with separate prompts
+	response, err := yt.aiService.GenerateContentWithSystem(systemPrompt, userPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate visual prompts: %w", err)
 	}
 
-	// Enhanced cleaning logic for JSON response
+	// Rest of your existing code for cleaning and parsing JSON...
 	cleanResponse := strings.TrimSpace(response)
 
-	// Remove code block markers
 	if strings.HasPrefix(cleanResponse, "```json") {
 		cleanResponse = strings.TrimPrefix(cleanResponse, "```json")
 	} else if strings.HasPrefix(cleanResponse, "```") {
@@ -232,7 +229,6 @@ func (yt *YtAutomation) generateVisualPromptsWithStyle(srtContent string, script
 	}
 	cleanResponse = strings.TrimSpace(cleanResponse)
 
-	// Fix common JSON formatting issues
 	cleanResponse = fixJSONFormatting(cleanResponse)
 
 	var visualPrompts []VisualPromptResponse

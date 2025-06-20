@@ -24,6 +24,7 @@ type SRTEntry struct {
 }
 
 const (
+	debugMode                   = true
 	defaultSectionCount         = 3
 	visualImageMultiplier       = 5
 	defaultSleepBetweenSections = 1 * time.Second

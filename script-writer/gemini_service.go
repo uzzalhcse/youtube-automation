@@ -27,8 +27,11 @@ func NewGeminiService(apiKey string) *GeminiService {
 		client: &http.Client{Timeout: timeout},
 	}
 }
-
-// GenerateContent calls the Gemini API with context-aware prompting
+func (g *GeminiService) GenerateContentWithSystem(systemPrompt, userPrompt string) (string, error) {
+	// For Gemini, we combine them as it doesn't have separate system/user roles like OpenAI
+	combinedPrompt := systemPrompt + "\n\n" + userPrompt
+	return g.GenerateContent(combinedPrompt)
+}
 func (g *GeminiService) GenerateContent(prompt string) (string, error) {
 	return g.RetryWithExponentialBackoff(prompt, maxRetries)
 }
@@ -90,6 +93,9 @@ func (g *GeminiService) callAPI(prompt string) (string, error) {
 func (g *GeminiService) RetryWithExponentialBackoff(prompt string, maxRetries int) (string, error) {
 	var lastErr error
 
+	if debugMode {
+		fmt.Println(prompt)
+	}
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		result, err := g.callAPI(prompt)
 		if err == nil {

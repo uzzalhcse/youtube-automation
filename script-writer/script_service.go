@@ -72,8 +72,7 @@ func (yt *YtAutomation) generateOutline(script *Script, sectionCount int) error 
 		return fmt.Errorf("building outline prompt: %w", err)
 	}
 
-	finalPrompt := systemPrompt + "\n\n" + userPrompt
-	response, err := yt.geminiService.GenerateContent(finalPrompt)
+	response, err := yt.aiService.GenerateContentWithSystem(systemPrompt, userPrompt)
 	if err != nil {
 		return err
 	}
@@ -106,8 +105,7 @@ func (yt *YtAutomation) generateHookAndIntroduction(script *Script, wordLimit in
 		return fmt.Errorf("building hook prompt: %w", err)
 	}
 
-	finalPrompt := systemPrompt + "\n\n" + userPrompt
-	response, err := yt.geminiService.GenerateContent(finalPrompt)
+	response, err := yt.aiService.GenerateContentWithSystem(systemPrompt, userPrompt)
 	if err != nil {
 		return err
 	}
@@ -140,8 +138,7 @@ func (yt *YtAutomation) generateSection(script *Script, sectionNumber int, wordL
 		return fmt.Errorf("building section prompt: %w", err)
 	}
 
-	finalPrompt := systemPrompt + "\n\n" + userPrompt
-	response, err := yt.geminiService.GenerateContent(finalPrompt)
+	response, err := yt.aiService.GenerateContentWithSystem(systemPrompt, userPrompt)
 	if err != nil {
 		return err
 	}
@@ -171,8 +168,7 @@ func (yt *YtAutomation) generateMetaTag(script *Script) error {
 		return fmt.Errorf("building meta tag prompt: %w", err)
 	}
 
-	finalPrompt := systemPrompt + "\n\n" + userPrompt
-	response, err := yt.geminiService.GenerateContent(finalPrompt)
+	response, err := yt.aiService.GenerateContentWithSystem(systemPrompt, userPrompt)
 	if err != nil {
 		return err
 	}

@@ -42,11 +42,14 @@ const (
 	StatusCompleted  = "completed"
 	StatusFailed     = "failed"
 )
+const (
+	defaultAIProvider = ProviderGemini // ProviderGemini or ProviderOpenRouter
+)
 
 type YtAutomation struct {
 	mongoClient      *mongo.Client
 	templateService  *TemplateService
-	geminiService    *GeminiService
+	aiService        AIService
 	outlineParser    *OutlineParser
 	elevenLabsClient *elevenlabs.ElevenLabsClient
 	client           *http.Client
@@ -58,10 +61,24 @@ func NewYtAutomation(mongoClient *mongo.Client, templateService *TemplateService
 	if config.RequestsPerMinute > 0 {
 		rateLimiter = NewRateLimiter(config.RequestsPerMinute)
 	}
+	geminiKey := os.Getenv("GEMINI_API_KEY")
+	openRouterKey := os.Getenv("OPENROUTER_API_KEY")
+	// Get provider from environment (default to gemini)
+	providerStr := os.Getenv("AI_PROVIDER")
+	if providerStr == "" {
+		providerStr = string(defaultAIProvider)
+	}
+
+	provider := AIProvider(providerStr)
+
+	aiService, err := NewAIService(provider, geminiKey, openRouterKey)
+	if err != nil {
+		log.Fatalf("Failed to initialize AI service: %v", err)
+	}
 	return &YtAutomation{
 		mongoClient:     mongoClient,
 		templateService: templateService,
-		geminiService:   geminiService,
+		aiService:       aiService,
 		outlineParser:   NewOutlineParser(),
 		elevenLabsClient: elevenlabs.NewElevenLabsClient(os.Getenv("ELEVENLABS_API_KEY"), &elevenlabs.Proxy{
 			Server:   os.Getenv("PROXY_SERVER"),

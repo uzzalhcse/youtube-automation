@@ -44,7 +44,7 @@ type ElevenLabsClient struct {
 }
 
 func NewElevenLabsClient(apiKey string, proxy *Proxy) *ElevenLabsClient {
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: 120 * time.Second}
 
 	// Configure proxy if provided
 	if proxy != nil && proxy.Server != "" {
