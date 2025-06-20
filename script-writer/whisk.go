@@ -460,19 +460,6 @@ func (yt *YtAutomation) MakeConcurrentRequests(jobs []RequestJob) error {
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
 
-			// Get seed for logging based on payload type
-			var seed int
-			switch payload := j.Payload.(type) {
-			case RequestPayload:
-				seed = payload.Seed
-			case ImageFXPayload:
-				seed = payload.UserInput.Seed
-			default:
-				seed = 0 // fallback
-			}
-
-			fmt.Printf("Starting request %s with seed %d\n", j.ID, seed)
-
 			result := JobResult{ID: j.ID}
 
 			// Make the request (with built-in rate limiting and retries)

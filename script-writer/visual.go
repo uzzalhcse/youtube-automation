@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-func (yt *YtAutomation) generateVisualPromptForChunks(scriptID primitive.ObjectID, chunks []ScriptSrt) error {
+func (yt *YtAutomation) generateVisualPromptForChunks(scriptID primitive.ObjectID, chunks []ScriptSrt, styleID primitive.ObjectID) error {
 	fmt.Printf("🎨 Starting visual prompt generation for %d chunks...\n", len(chunks))
 	script, err := yt.getScriptByID(scriptID)
 	if err != nil {
@@ -21,7 +21,7 @@ func (yt *YtAutomation) generateVisualPromptForChunks(scriptID primitive.ObjectI
 		fmt.Printf("Generating visual prompt for chunk %d/%d...\n", i+1, len(chunks))
 
 		// Generate visual prompt using Gemini
-		visualPrompts, err := yt.generateVisualPrompts(chunk.Content, script)
+		visualPrompts, err := yt.generateVisualPrompts(chunk.Content, script, styleID)
 		if err != nil {
 			fmt.Printf("Warning: Failed to generate prompt visual for chunk %d: %v\n", chunk.ChunkIndex, err)
 			continue
@@ -74,8 +74,8 @@ func (yt *YtAutomation) saveChunkVisuals(scriptID primitive.ObjectID, chunk Scri
 			ChunkID:     chunk.ID,
 			ChunkIndex:  chunk.ChunkIndex,
 			PromptIndex: i,
-			StartTime:   prompt.Start,
-			EndTime:     prompt.End,
+			StartTime:   prompt.StartTime,
+			EndTime:     prompt.EndTime,
 			Prompt:      prompt.Prompt,
 			CreatedAt:   time.Now(),
 		}

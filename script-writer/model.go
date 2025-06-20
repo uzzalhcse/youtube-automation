@@ -118,9 +118,9 @@ type ChunkVisual struct {
 	CreatedAt    time.Time          `bson:"created_at" json:"created_at"`
 }
 type VisualPromptResponse struct {
-	Start  string `json:"start"`
-	End    string `json:"end"`
-	Prompt string `json:"prompt"`
+	StartTime string `bson:"start_time" json:"start_time"`
+	EndTime   string `bson:"end_time" json:"end_time"`
+	Prompt    string `json:"prompt"`
 }
 
 /*
@@ -202,32 +202,13 @@ type Template struct {
 	Version     int                `bson:"version" json:"version"`
 }
 
-type TemplateRequest struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Content     string `json:"content"`
-	Description string `json:"description,omitempty"`
-}
-
-type TemplateResponse struct {
-	Success bool      `json:"success"`
-	Message string    `json:"message,omitempty"`
-	Error   string    `json:"error,omitempty"`
-	Data    *Template `json:"data,omitempty"`
-}
-type PromptTemplate struct {
-	ID           primitive.ObjectID `bson:"_id,omitempty" json:"id"`
-	ChannelID    primitive.ObjectID `bson:"channel_id,omitempty" json:"channel_id"` // nil for global templates
-	Name         string             `bson:"name" json:"name"`
-	Type         string             `bson:"type" json:"type"` // outline, script, hook_intro, etc.
-	SystemPrompt string             `bson:"system_prompt" json:"system_prompt"`
-	UserPrompt   string             `bson:"user_prompt" json:"user_prompt"`
-	Variables    []string           `bson:"variables" json:"variables"` // ["{TOPIC}", "{SECTION_COUNT}", etc.]
-	IsActive     bool               `bson:"is_active" json:"is_active"`
-	IsGlobal     bool               `bson:"is_global" json:"is_global"` // true for default templates
-	CreatedAt    time.Time          `bson:"created_at" json:"created_at"`
-	UpdatedAt    time.Time          `bson:"updated_at" json:"updated_at"`
-	Version      int                `bson:"version" json:"version"`
+// NEW REQUEST STRUCTURES
+type VisualStyleRequest struct {
+	Name           string   `json:"name"`
+	Category       string   `json:"category"`
+	Description    string   `json:"description"`
+	StyleRules     []string `json:"style_rules"`
+	PromptTemplate string   `json:"prompt_template"`
 }
 
 type PromptTemplateRequest struct {
@@ -237,5 +218,34 @@ type PromptTemplateRequest struct {
 	SystemPrompt string   `json:"system_prompt"`
 	UserPrompt   string   `json:"user_prompt"`
 	Variables    []string `json:"variables,omitempty"`
+	StyleIDs     []string `json:"style_ids,omitempty"` // NEW: Style IDs as strings
 	IsGlobal     bool     `json:"is_global"`
+}
+
+type PromptTemplate struct {
+	ID           primitive.ObjectID   `bson:"_id,omitempty" json:"id"`
+	ChannelID    primitive.ObjectID   `bson:"channel_id,omitempty" json:"channel_id"` // nil for global templates
+	Name         string               `bson:"name" json:"name"`
+	Type         string               `bson:"type" json:"type"` // outline, script, hook_intro, etc.
+	SystemPrompt string               `bson:"system_prompt" json:"system_prompt"`
+	UserPrompt   string               `bson:"user_prompt" json:"user_prompt"`
+	Variables    []string             `bson:"variables" json:"variables"`           // ["{TOPIC}", "{SECTION_COUNT}", etc.]
+	StyleIDs     []primitive.ObjectID `bson:"style_ids,omitempty" json:"style_ids"` // NEW: Reference to visual styles
+	IsActive     bool                 `bson:"is_active" json:"is_active"`
+	IsGlobal     bool                 `bson:"is_global" json:"is_global"` // true for default templates
+	CreatedAt    time.Time            `bson:"created_at" json:"created_at"`
+	UpdatedAt    time.Time            `bson:"updated_at" json:"updated_at"`
+	Version      int                  `bson:"version" json:"version"`
+}
+
+type VisualStyle struct {
+	ID             primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	Name           string             `bson:"name" json:"name"`
+	Category       string             `bson:"category" json:"category"` // "minimalist", "artistic", "abstract"
+	Description    string             `bson:"description" json:"description"`
+	StyleRules     []string           `bson:"style_rules" json:"style_rules"`
+	PromptTemplate string             `bson:"prompt_template" json:"prompt_template"` // Template with [CONTENT] placeholder
+	IsActive       bool               `bson:"is_active" json:"is_active"`
+	CreatedAt      time.Time          `bson:"created_at" json:"created_at"`
+	UpdatedAt      time.Time          `bson:"updated_at" json:"updated_at"`
 }

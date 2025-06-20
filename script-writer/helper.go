@@ -481,3 +481,42 @@ func (yt *YtAutomation) cleanupTempFiles(files []string) error {
 	}
 	return nil
 }
+
+// Helper function to fix common JSON formatting issues
+func fixJSONFormatting(jsonStr string) string {
+	// Fix decimal numbers with spaces (e.g., "1. 5" -> "1.5")
+	re := regexp.MustCompile(`(\d+)\.\s+(\d+)`)
+	jsonStr = re.ReplaceAllString(jsonStr, "$1.$2")
+
+	// Fix numbers with trailing spaces before commas/brackets
+	re = regexp.MustCompile(`(\d+)\s+([,\]\}])`)
+	jsonStr = re.ReplaceAllString(jsonStr, "$1$2")
+
+	// Fix numbers with leading spaces after colons
+	re = regexp.MustCompile(`:\s+(\d+\.\s+\d+)`)
+	jsonStr = re.ReplaceAllStringFunc(jsonStr, func(match string) string {
+		parts := strings.Split(match, ":")
+		if len(parts) == 2 {
+			number := strings.TrimSpace(parts[1])
+			number = strings.ReplaceAll(number, " ", "")
+			return ":" + number
+		}
+		return match
+	})
+
+	// NEW: Convert numeric timestamps to strings
+	re = regexp.MustCompile(`"(start_time|end_time)":\s*(\d+\.?\d*)`)
+	jsonStr = re.ReplaceAllString(jsonStr, `"$1": "$2"`)
+
+	// Remove any extra whitespace that might cause issues
+	lines := strings.Split(jsonStr, "\n")
+	var cleanLines []string
+	for _, line := range lines {
+		cleanLine := strings.TrimSpace(line)
+		if cleanLine != "" {
+			cleanLines = append(cleanLines, cleanLine)
+		}
+	}
+
+	return strings.Join(cleanLines, "\n")
+}

@@ -33,6 +33,7 @@ var (
 	chunkVisualsCollection    *mongo.Collection
 	videoStatusCollection     *mongo.Collection
 	promptTemplatesCollection *mongo.Collection
+	visualStylesCollection    *mongo.Collection
 )
 
 const (
@@ -114,11 +115,12 @@ func main() {
 	// Setup HTTP routes
 	http.HandleFunc("/generate-script", yt.generateScriptHandler) // step 1
 	http.HandleFunc("/scripts/", yt.getScriptStatusHandler)
-	http.HandleFunc("/generate-audio/", yt.generateAudioHandler)                     // step 2
-	http.HandleFunc("/generate-subtitle/", yt.generateSubtitleHandler)               // step 3
-	http.HandleFunc("/generate-visual-prompt/", yt.generateVisualPromptHandler)      // step 4
-	http.HandleFunc("/generate-visual-images/", yt.generateVisualImagePromptHandler) // step 5
-	http.HandleFunc("/generate-video/", yt.generateVideoHandler)                     // step 6
+	http.HandleFunc("/generate-audio/", yt.generateAudioHandler)                                     // step 2
+	http.HandleFunc("/generate-subtitle/", yt.generateSubtitleHandler)                               // step 3
+	http.HandleFunc("/generate-visual-prompt/", yt.generateVisualPromptHandler)                      // step 4
+	http.HandleFunc("/generate-visual-prompts-with-style", yt.generateVisualPromptsWithStyleHandler) // step 4
+	http.HandleFunc("/generate-visual-images/", yt.generateVisualImagePromptHandler)                 // step 5
+	http.HandleFunc("/generate-video/", yt.generateVideoHandler)                                     // step 6
 	http.HandleFunc("/scripts-chunks/", yt.getScriptAudiosHandler)
 	http.HandleFunc("/health", yt.healthHandler)
 	http.HandleFunc("/channels/", func(w http.ResponseWriter, r *http.Request) {
@@ -131,6 +133,9 @@ func main() {
 	})
 	http.HandleFunc("/prompt-templates", yt.createPromptTemplateHandler)
 	http.HandleFunc("/prompt-templates/list", yt.getPromptTemplatesHandler)
+	http.HandleFunc("/visual-styles", yt.createVisualStyleHandler)
+	http.HandleFunc("/visual-styles/list", yt.getVisualStylesHandler)
+
 	// Start server
 	port := getPort()
 	fmt.Printf("=== Wisderly YouTube Script Generator API ===\n")
@@ -182,6 +187,7 @@ func initializeMongoDB() (*mongo.Client, error) {
 	chunkVisualsCollection = database.Collection("chunk_visuals")
 	videoStatusCollection = database.Collection("script_videos")
 	promptTemplatesCollection = database.Collection("prompt_templates")
+	visualStylesCollection = database.Collection("visual_styles")
 
 	// Create indexes
 	if err := createIndexes(); err != nil {
@@ -847,7 +853,7 @@ func (yt *YtAutomation) generateVisualPromptHandler(w http.ResponseWriter, r *ht
 		}
 	}
 	go func() {
-		if err := yt.generateVisualPromptForChunks(objectID, scriptSrtChunks); err != nil {
+		if err := yt.generateVisualPromptForChunks(objectID, scriptSrtChunks, primitive.NilObjectID); err != nil {
 			fmt.Printf("Warning: Failed to generate visuals for chunks: %v\n", err)
 		}
 	}()

@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -59,7 +62,73 @@ func (t *TemplateService) BuildDynamicPrompt(channelID primitive.ObjectID, templ
 	systemPrompt := template.SystemPrompt
 	userPrompt := template.UserPrompt
 
-	// Replace variables
+	// Handle visual style injection for visual_prompts type
+	if templateType == "visual_prompts" && len(template.StyleIDs) > 0 {
+		// Use the first style by default, or you can add logic to select specific style
+		styleID := template.StyleIDs[0]
+
+		var style VisualStyle
+		err := visualStylesCollection.FindOne(context.Background(), bson.M{"_id": styleID, "is_active": true}).Decode(&style)
+		if err != nil {
+			return "", "", fmt.Errorf("visual style not found: %w", err)
+		}
+
+		// Build style rules text
+		styleRulesText := "🎨 STRICT VISUAL STYLE (MANDATORY):\n"
+		for _, rule := range style.StyleRules {
+			styleRulesText += "- " + rule + "\n"
+		}
+
+		// Build prompt template text
+		promptTemplateText := "🖼️ PROMPT TEMPLATE (REQUIRED FORMAT):\n\"" + style.PromptTemplate + "\""
+
+		// Replace style placeholders
+		userPrompt = strings.ReplaceAll(userPrompt, "{VISUAL_STYLE_RULES}", styleRulesText)
+		userPrompt = strings.ReplaceAll(userPrompt, "{PROMPT_TEMPLATE}", promptTemplateText)
+	}
+
+	// Replace other variables
+	for key, value := range variables {
+		systemPrompt = strings.ReplaceAll(systemPrompt, key, value)
+		userPrompt = strings.ReplaceAll(userPrompt, key, value)
+	}
+
+	return systemPrompt, userPrompt, nil
+}
+func (t *TemplateService) BuildDynamicPromptWithStyle(channelID primitive.ObjectID, templateType string, styleID primitive.ObjectID, variables map[string]string) (string, string, error) {
+	template, err := t.GetPromptTemplate(channelID, templateType)
+	if err != nil {
+		return "", "", err
+	}
+
+	systemPrompt := template.SystemPrompt
+	userPrompt := template.UserPrompt
+
+	// Handle visual style injection
+	if templateType == "visual_prompts" {
+		var style VisualStyle
+		err := visualStylesCollection.FindOne(context.Background(), bson.M{"_id": styleID, "is_active": true}).Decode(&style)
+		if err != nil {
+			return "", "", fmt.Errorf("visual style not found: %w", err)
+		}
+
+		// Build style rules text
+		styleRulesText := "🎨 STRICT VISUAL STYLE (MANDATORY):\n"
+		for _, rule := range style.StyleRules {
+			styleRulesText += "- " + rule + "\n"
+		}
+
+		// Build prompt template text
+		promptTemplateText := "🖼️ PROMPT TEMPLATE (REQUIRED FORMAT):\n\"" + style.PromptTemplate + "\""
+
+		// Replace style placeholders
+		userPrompt = strings.ReplaceAll(userPrompt, "{VISUAL_STYLE_RULES}", styleRulesText)
+		userPrompt = strings.ReplaceAll(userPrompt, "{PROMPT_TEMPLATE}", promptTemplateText)
+
+		systemPrompt = strings.ReplaceAll(systemPrompt, "{VISUAL_STYLE_NAME}", style.Name)
+	}
+
+	// Replace other variables
 	for key, value := range variables {
 		systemPrompt = strings.ReplaceAll(systemPrompt, key, value)
 		userPrompt = strings.ReplaceAll(userPrompt, key, value)
@@ -117,68 +186,45 @@ func (t *TemplateService) BuildVisualGuidancePrompt(script *Script, sectionCount
 
 	return t.BuildDynamicPrompt(script.ChannelID, "visual_guidance", variables)
 }
+func (yt *YtAutomation) generateVisualPrompts(srtContent string, script *Script, styleID primitive.ObjectID) ([]VisualPromptResponse, error) {
+	return yt.generateVisualPromptsWithStyle(srtContent, script, styleID)
+}
 
-// Replace existing generateVisualPrompts method
-func (yt *YtAutomation) generateVisualPrompts(srtContent string, script *Script) ([]VisualPromptResponse, error) {
-	// Get dynamic prompt template
+func (yt *YtAutomation) generateVisualPromptsWithStyle(srtContent string, script *Script, styleID primitive.ObjectID) ([]VisualPromptResponse, error) {
 	templateService := NewTemplateService()
 	variables := map[string]string{
 		"{SRT_CONTENT}": srtContent,
 	}
 
-	systemPrompt, userPrompt, err := templateService.BuildDynamicPrompt(script.ChannelID, "visual_prompts", variables)
-	if err != nil {
-		// Fallback to hardcoded prompt if template not found
-		systemPrompt = "You are a visual narration mapping assistant."
-		userPrompt = `You are a visual narration mapping assistant.
-I will give you .srt subtitle data. Your job is to output a dense series of visual prompts that match each key beat of the spoken narration.
+	var systemPrompt, userPrompt string
+	var err error
 
-🧠 Visual Chunking Rules:
-New sentence? → Start a new visual unit
-Short line (e.g. <3s or <6 words)? → Merge only if it feels like a continuous idea
-Powerful/emotional words (e.g. "Boom." "Yeah?" "Lazy.") → Give their own visual moment
-Conceptual/emotional shifts? → Start new visual
-If uncertain: Prefer more visuals, not fewer
-⚠️ Avoid merging more than 10 seconds of narration into a single prompt.
-
-🎨 Visual Prompt Template:
-For each chunk, generate a unique visual using this template:
-A hand-drawn cartoon scene with a stick figure in a red scarf. Scene: {scene_concept}. Style: sketchy black-and-white with minimal red accent. Background in soft beige. Emotion: {emotion_or_mood}.
-
-🧠 scene_concept should reflect what's happening or being said (literal, metaphorical, or symbolic).
-💬 emotion_or_mood should capture the tone: hopeful, anxious, dreamy, frustrated, etc.
-
-✅ Output Format:
-IMPORTANT: Return ONLY the JSON array, no markdown formatting, no backticks, no code blocks.
-A JSON array like this:
-[
-  {
-    "start": "00:00:00,000",
-    "end": "00:00:04,940",
-    "prompt": "A stick figure in a red scarf looks at the sky full of clouds and stars, dreaming. Minimalist cartoon style. Mood: hopeful."
-  }
-]
-
-🎯 Target: Output ~1 visual per idea or emotional beat. Do not compress multiple beats into one. If in doubt, split it.
-
-Now here is the .srt file:
-` + srtContent
+	// Use specific style if provided, otherwise use default from template
+	if styleID != primitive.NilObjectID {
+		systemPrompt, userPrompt, err = templateService.BuildDynamicPromptWithStyle(script.ChannelID, "visual_prompts", styleID, variables)
+	} else {
+		systemPrompt, userPrompt, err = templateService.BuildDynamicPrompt(script.ChannelID, "visual_prompts", variables)
 	}
 
-	// Rest of the method remains the same...
+	if err != nil {
+		return nil, fmt.Errorf("failed to build visual prompt template: %w", err)
+	}
+
 	finalPrompt := systemPrompt + "\n\n" + userPrompt
 
+	fmt.Println("finalPrompt", finalPrompt)
 	response, err := yt.geminiService.GenerateContent(finalPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate visual prompts: %w", err)
 	}
 
-	// Rest of the existing parsing logic remains the same
+	// Enhanced cleaning logic for JSON response
 	cleanResponse := strings.TrimSpace(response)
+
+	// Remove code block markers
 	if strings.HasPrefix(cleanResponse, "```json") {
 		cleanResponse = strings.TrimPrefix(cleanResponse, "```json")
-	}
-	if strings.HasPrefix(cleanResponse, "```") {
+	} else if strings.HasPrefix(cleanResponse, "```") {
 		cleanResponse = strings.TrimPrefix(cleanResponse, "```")
 	}
 	if strings.HasSuffix(cleanResponse, "```") {
@@ -186,12 +232,106 @@ Now here is the .srt file:
 	}
 	cleanResponse = strings.TrimSpace(cleanResponse)
 
+	// Fix common JSON formatting issues
+	cleanResponse = fixJSONFormatting(cleanResponse)
+
 	var visualPrompts []VisualPromptResponse
 	if err := json.Unmarshal([]byte(cleanResponse), &visualPrompts); err != nil {
+		log.Printf("JSON parsing error: %v\nResponse: %s", err, cleanResponse)
 		return nil, fmt.Errorf("failed to parse visual prompts JSON: %w", err)
 	}
 
 	return visualPrompts, nil
+}
+
+func (yt *YtAutomation) generateVisualPromptsWithStyleHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	var req struct {
+		ScriptID string `json:"script_id"`
+		StyleID  string `json:"style_id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid JSON")
+		return
+	}
+
+	scriptID, err := primitive.ObjectIDFromHex(req.ScriptID)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid script ID")
+		return
+	}
+
+	styleID, err := primitive.ObjectIDFromHex(req.StyleID)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid style ID")
+		return
+	}
+	var script Script
+	err = scriptsCollection.FindOne(context.Background(), bson.M{"_id": scriptID}).Decode(&script)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			respondWithError(w, http.StatusNotFound, "Script not found")
+			return
+		}
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Database error: %v", err))
+		return
+	}
+
+	// Check if chunks already exist for this script
+	existingCount, err := scriptAudiosCollection.CountDocuments(
+		context.Background(),
+		bson.M{"script_id": scriptID},
+	)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error checking existing chunks: %v", err))
+		return
+	}
+
+	var scriptSrtChunks []ScriptSrt
+
+	if existingCount > 0 {
+
+		findOptions := options.Find().SetSort(bson.M{"chunk_index": 1})
+		cursor, err := scriptSrtCollection.Find(
+			context.Background(),
+			bson.M{"script_id": scriptID},
+			findOptions,
+		)
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error fetching existing chunks: %v", err))
+			return
+		}
+		defer cursor.Close(context.Background())
+
+		if err = cursor.All(context.Background(), &scriptSrtChunks); err != nil {
+			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error decoding existing chunks: %v", err))
+			return
+		}
+	}
+	go func() {
+		if err := yt.generateVisualPromptForChunks(scriptID, scriptSrtChunks, styleID); err != nil {
+			fmt.Printf("Warning: Failed to generate visuals for chunks: %v\n", err)
+		}
+	}()
+
+	data := map[string]interface{}{
+		"script_id": scriptID,
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"message": "Visual Prompt generation InProgress",
+		"data":    data,
+	})
 }
 func (yt *YtAutomation) createPromptTemplateHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -210,12 +350,26 @@ func (yt *YtAutomation) createPromptTemplateHandler(w http.ResponseWriter, r *ht
 		return
 	}
 
+	// Convert string style IDs to ObjectIDs
+	var styleIDs []primitive.ObjectID
+	for _, styleID := range req.StyleIDs {
+		if styleID != "" {
+			objID, err := primitive.ObjectIDFromHex(styleID)
+			if err != nil {
+				respondWithError(w, http.StatusBadRequest, "Invalid style ID: "+styleID)
+				return
+			}
+			styleIDs = append(styleIDs, objID)
+		}
+	}
+
 	template := PromptTemplate{
 		Name:         req.Name,
 		Type:         req.Type,
 		SystemPrompt: req.SystemPrompt,
 		UserPrompt:   req.UserPrompt,
 		Variables:    req.Variables,
+		StyleIDs:     styleIDs, // NEW: Store style references
 		IsActive:     true,
 		IsGlobal:     req.IsGlobal,
 		CreatedAt:    time.Now(),
@@ -245,6 +399,7 @@ func (yt *YtAutomation) createPromptTemplateHandler(w http.ResponseWriter, r *ht
 		"data":    template,
 	})
 }
+
 func (yt *YtAutomation) getPromptTemplatesHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -287,4 +442,105 @@ func (yt *YtAutomation) getPromptTemplatesHandler(w http.ResponseWriter, r *http
 		"success": true,
 		"data":    templates,
 	})
+}
+func (yt *YtAutomation) createVisualStyleHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	var req VisualStyleRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid JSON")
+		return
+	}
+
+	style := VisualStyle{
+		Name:           req.Name,
+		Category:       req.Category,
+		Description:    req.Description,
+		StyleRules:     req.StyleRules,
+		PromptTemplate: req.PromptTemplate,
+		IsActive:       true,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+
+	result, err := visualStylesCollection.InsertOne(context.Background(), style)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to create visual style")
+		return
+	}
+
+	style.ID = result.InsertedID.(primitive.ObjectID)
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"data":    style,
+	})
+}
+
+func (yt *YtAutomation) getVisualStylesHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	category := r.URL.Query().Get("category")
+	filter := bson.M{"is_active": true}
+	if category != "" {
+		filter["category"] = category
+	}
+
+	cursor, err := visualStylesCollection.Find(context.Background(), filter)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to fetch visual styles")
+		return
+	}
+	defer cursor.Close(context.Background())
+
+	var styles []VisualStyle
+	if err = cursor.All(context.Background(), &styles); err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to decode visual styles")
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"data":    styles,
+	})
+}
+
+// NEW UTILITY FUNCTION - For runtime style injection
+func (yt *YtAutomation) buildPromptWithStyle(template PromptTemplate, styleID primitive.ObjectID, variables map[string]string) (string, error) {
+	// Get the visual style
+	var style VisualStyle
+	err := visualStylesCollection.FindOne(context.Background(), bson.M{"_id": styleID, "is_active": true}).Decode(&style)
+	if err != nil {
+		return "", fmt.Errorf("visual style not found")
+	}
+
+	// Build style rules text
+	styleRulesText := "🎨 STRICT VISUAL STYLE (MANDATORY):\n"
+	for _, rule := range style.StyleRules {
+		styleRulesText += "- " + rule + "\n"
+	}
+
+	// Build prompt template
+	promptTemplateText := "🖼️ PROMPT TEMPLATE (REQUIRED FORMAT):\n\"" + style.PromptTemplate + "\""
+
+	// Replace placeholders in user prompt
+	userPrompt := template.UserPrompt
+	userPrompt = strings.ReplaceAll(userPrompt, "{VISUAL_STYLE_RULES}", styleRulesText)
+	userPrompt = strings.ReplaceAll(userPrompt, "{PROMPT_TEMPLATE}", promptTemplateText)
+
+	// Replace other variables
+	for key, value := range variables {
+		userPrompt = strings.ReplaceAll(userPrompt, key, value)
+	}
+
+	return userPrompt, nil
 }
