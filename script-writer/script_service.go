@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"strings"
 	"time"
 )
 
@@ -29,6 +30,11 @@ func (yt *YtAutomation) GenerateCompleteScript(scriptID primitive.ObjectID) erro
 	if err := yt.generateOutline(script, channel.Settings.DefaultSectionCount); err != nil {
 		yt.updateScriptError(scriptID, err.Error())
 		return fmt.Errorf("generating outline: %w", err)
+	}
+	// reload updated script from db
+	script, err = yt.getScriptByID(scriptID)
+	if err != nil {
+		return fmt.Errorf("loading script: %w", err)
 	}
 
 	// Step 2: Generate hook and introduction
@@ -63,7 +69,6 @@ func (yt *YtAutomation) GenerateCompleteScript(scriptID primitive.ObjectID) erro
 	return nil
 }
 
-// Replace generateOutline method
 func (yt *YtAutomation) generateOutline(script *Script, sectionCount int) error {
 	fmt.Println("Generating outline...")
 
@@ -77,26 +82,39 @@ func (yt *YtAutomation) generateOutline(script *Script, sectionCount int) error 
 		return err
 	}
 
-	// Parse outline points
-	outlinePoints := yt.outlineParser.ParseOutlinePoints(response, sectionCount)
+	// Parse JSON outline
+	sections, err := yt.outlineParser.ParseOutlineJSON(response, sectionCount)
+	if err != nil {
+		return fmt.Errorf("parsing outline JSON: %w", err)
+	}
+
+	// Convert sections to string format
+	var outlineString strings.Builder
+	for i, section := range sections {
+		outlineString.WriteString(fmt.Sprintf("%d. %s\n", i+1, section.Title))
+		if section.Summary != "" {
+			outlineString.WriteString(fmt.Sprintf("   Summary: %s\n", section.Summary))
+		}
+		outlineString.WriteString("\n")
+	}
+
 	var dbOutlinePoints []OutlinePoint
-	for i, point := range outlinePoints {
+	for i, section := range sections {
 		dbOutlinePoints = append(dbOutlinePoints, OutlinePoint{
 			SectionNumber: i + 1,
-			Title:         point,
+			Title:         section.Title,
+			Summary:       section.Summary,
 		})
 	}
 
-	// Update script in DB
 	updateData := bson.M{
-		"outline":        response,
+		"outline":        strings.TrimSpace(outlineString.String()),
 		"outline_points": dbOutlinePoints,
 	}
 
 	return yt.updateScriptInDB(script.ID, updateData)
 }
 
-// Replace generateHookAndIntroduction method
 func (yt *YtAutomation) generateHookAndIntroduction(script *Script, wordLimit int) error {
 	fmt.Println("Generating Hook and Introduction...")
 
@@ -110,15 +128,20 @@ func (yt *YtAutomation) generateHookAndIntroduction(script *Script, wordLimit in
 		return err
 	}
 
-	// Update script with hook content
+	// Parse JSON hook intro
+	hookContent, err := yt.outlineParser.ParseHookIntroJSON(response)
+	if err != nil {
+		return fmt.Errorf("parsing hook intro JSON: %w", err)
+	}
+
 	updateData := bson.M{
-		"full_script": response + "\n\n\n\n\n\n",
+		"full_script": hookContent.Content + "\n\n\n\n\n\n",
+		"hook_mode":   hookContent.ModeUsed,
 	}
 
 	return yt.updateScriptInDB(script.ID, updateData)
 }
 
-// Replace generateSection method
 func (yt *YtAutomation) generateSection(script *Script, sectionNumber int, wordLimit int) error {
 	// Reload script to get latest content
 	updatedScript, err := yt.getScriptByID(script.ID)
@@ -143,8 +166,14 @@ func (yt *YtAutomation) generateSection(script *Script, sectionNumber int, wordL
 		return err
 	}
 
+	// Parse JSON section
+	sectionContent, err := yt.outlineParser.ParseSectionJSON(response)
+	if err != nil {
+		return fmt.Errorf("parsing section JSON: %w", err)
+	}
+
 	// Append to existing script content
-	newContent := updatedScript.FullScript + response + "\n\n\n\n\n\n"
+	newContent := updatedScript.FullScript + sectionContent.Content + "\n\n\n\n\n\n"
 	updateData := bson.M{
 		"full_script":        newContent,
 		"sections_generated": sectionNumber,
@@ -153,11 +182,9 @@ func (yt *YtAutomation) generateSection(script *Script, sectionNumber int, wordL
 	return yt.updateScriptInDB(script.ID, updateData)
 }
 
-// Replace generateMetaTag method
 func (yt *YtAutomation) generateMetaTag(script *Script) error {
 	fmt.Println("Generating Meta Tags...")
 
-	// Reload script to get latest content
 	updatedScript, err := yt.getScriptByID(script.ID)
 	if err != nil {
 		return err
@@ -173,11 +200,22 @@ func (yt *YtAutomation) generateMetaTag(script *Script) error {
 		return err
 	}
 
-	updateData := bson.M{
-		"meta_tag": response,
+	// Parse JSON meta
+	metaContent, err := yt.outlineParser.ParseMetaJSON(response)
+	if err != nil {
+		return fmt.Errorf("parsing meta JSON: %w", err)
 	}
 
-	return yt.updateScriptInDB(script.ID, updateData)
+	updateData := bson.M{
+		"meta_title":       metaContent.Title,
+		"meta_description": metaContent.Description,
+		"meta_tags":        metaContent.Tags,
+		"thumbnail_text":   metaContent.ThumbnailText,
+	}
+
+	return yt.updateScriptInDB(script.ID, bson.M{
+		"meta": updateData,
+	})
 }
 func (yt *YtAutomation) displayOutlinePoints(points []string) {
 	if len(points) > 0 {

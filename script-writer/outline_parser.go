@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -22,40 +24,24 @@ func NewOutlineParser() *OutlineParser {
 	}
 }
 
-func (p *OutlineParser) ParseOutlinePoints(outlineResponse string, sectionCount int) []string {
-	var points []string
-	lines := strings.Split(outlineResponse, "\n")
+func (p *OutlineParser) ParseOutlineJSON(outlineResponse string, sectionCount int) ([]OutlineSection, error) {
+	var response OutlineResponse
 
-	// First pass: try to match formatted points
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		// Try all regex patterns (bullet -> numbered -> simple)
-		if matches := p.bulletRegex.FindStringSubmatch(line); len(matches) >= 2 {
-			point := p.combineMatches(matches[1], matches[2])
-			if point != "" {
-				points = append(points, point)
-			}
-		} else if matches := p.numberedRegex.FindStringSubmatch(line); len(matches) >= 2 {
-			point := p.combineMatches(matches[1], matches[2])
-			if point != "" {
-				points = append(points, point)
-			}
-		} else if matches := p.simpleRegex.FindStringSubmatch(line); len(matches) >= 2 {
-			point := p.combineMatches(matches[1], matches[2])
-			if point != "" {
-				points = append(points, point)
-			}
-		}
-	}
-	// Rest of your existing logic...
-	if len(points) == 0 {
-		points = p.extractMainPoints(lines)
+	// Clean response - remove any markdown code blocks
+	cleanResponse := strings.TrimSpace(outlineResponse)
+	cleanResponse = strings.TrimPrefix(cleanResponse, "```json")
+	cleanResponse = strings.TrimSuffix(cleanResponse, "```")
+	cleanResponse = strings.TrimSpace(cleanResponse)
+
+	if err := json.Unmarshal([]byte(cleanResponse), &response); err != nil {
+		return nil, fmt.Errorf("failed to parse JSON outline: %w", err)
 	}
 
-	return p.validateAndCleanPoints(points, sectionCount)
+	if len(response.Sections) != sectionCount {
+		return nil, fmt.Errorf("expected %d sections, got %d", sectionCount, len(response.Sections))
+	}
+
+	return response.Sections, nil
 }
 
 // combineMatches combines title and description from regex matches
@@ -183,4 +169,46 @@ func (p *OutlineParser) isValidPoint(point string) bool {
 	// Should contain some meaningful content
 	words := strings.Fields(point)
 	return len(words) >= 2
+}
+func (p *OutlineParser) ParseHookIntroJSON(response string) (HookIntroContent, error) {
+	var hookResponse HookIntroResponse
+
+	cleanResponse := p.cleanJSONResponse(response)
+
+	if err := json.Unmarshal([]byte(cleanResponse), &hookResponse); err != nil {
+		return HookIntroContent{}, fmt.Errorf("failed to parse hook intro JSON: %w", err)
+	}
+
+	return hookResponse.HookIntro, nil
+}
+
+func (p *OutlineParser) ParseSectionJSON(response string) (SectionContent, error) {
+	var sectionResponse SectionResponse
+
+	cleanResponse := p.cleanJSONResponse(response)
+
+	if err := json.Unmarshal([]byte(cleanResponse), &sectionResponse); err != nil {
+		return SectionContent{}, fmt.Errorf("failed to parse section JSON: %w", err)
+	}
+
+	return sectionResponse.Section, nil
+}
+
+func (p *OutlineParser) ParseMetaJSON(response string) (MetaContent, error) {
+	var metaResponse MetaResponse
+
+	cleanResponse := p.cleanJSONResponse(response)
+
+	if err := json.Unmarshal([]byte(cleanResponse), &metaResponse); err != nil {
+		return MetaContent{}, fmt.Errorf("failed to parse meta JSON: %w", err)
+	}
+
+	return metaResponse.Meta, nil
+}
+
+func (p *OutlineParser) cleanJSONResponse(response string) string {
+	cleanResponse := strings.TrimSpace(response)
+	cleanResponse = strings.TrimPrefix(cleanResponse, "```json")
+	cleanResponse = strings.TrimSuffix(cleanResponse, "```")
+	return strings.TrimSpace(cleanResponse)
 }

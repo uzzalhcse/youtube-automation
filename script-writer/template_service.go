@@ -137,7 +137,6 @@ func (t *TemplateService) BuildDynamicPromptWithStyle(channelID primitive.Object
 	return systemPrompt, userPrompt, nil
 }
 
-// Replace existing BuildOutlinePrompt
 func (t *TemplateService) BuildOutlinePrompt(script *Script, sectionCount int) (string, string, error) {
 	variables := map[string]string{
 		"{TOPIC}":         script.Topic,
@@ -146,7 +145,6 @@ func (t *TemplateService) BuildOutlinePrompt(script *Script, sectionCount int) (
 	return t.BuildDynamicPrompt(script.ChannelID, "outline", variables)
 }
 
-// Replace existing BuildHookIntroPrompt
 func (t *TemplateService) BuildHookIntroPrompt(script *Script, wordLimit int) (string, string, error) {
 	variables := map[string]string{
 		"{OUTLINE}":    script.Outline,
@@ -169,6 +167,7 @@ func (t *TemplateService) BuildSectionPrompt(script *Script, sectionNumber int, 
 	variables := map[string]string{
 		"{SECTION_NUMBER}": fmt.Sprintf("%d", sectionNumber),
 		"{OUTLINE_POINT}":  outlinePoint,
+		"{OUTLINE}":        script.Outline,
 		"{WORD_LIMIT}":     fmt.Sprintf("%d", wordLimit),
 		"{TOPIC}":          script.Topic,
 	}

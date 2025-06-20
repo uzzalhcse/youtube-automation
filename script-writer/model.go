@@ -25,7 +25,7 @@ type ChannelSettings struct {
 type OutlinePoint struct {
 	SectionNumber int    `bson:"section_number" json:"section_number"`
 	Title         string `bson:"title" json:"title"`
-	Description   string `bson:"description" json:"description"`
+	Summary       string `bson:"summary" json:"summary"`
 }
 
 type ImagePrompt struct {
@@ -46,14 +46,9 @@ type Script struct {
 	Outline       string         `bson:"outline" json:"outline"`
 	OutlinePoints []OutlinePoint `bson:"outline_points" json:"outline_points"`
 	FullScript    string         `bson:"full_script" json:"full_script"`
-	MetaTag       string         `bson:"meta_tag" json:"meta_tag"`
+	Meta          string         `bson:"meta" json:"meta"`
 	SRT           string         `bson:"srt" json:"srt"` // SRT content for subtitles
 	FullAudioFile string         `bson:"full_audio_file,omitempty" json:"full_audio_file,omitempty"`
-
-	// Keep file references for backward compatibility (optional)
-	OutputFolder    string `bson:"output_folder,omitempty" json:"output_folder,omitempty"`
-	OutputFilename  string `bson:"output_filename,omitempty" json:"output_filename,omitempty"`
-	MetaTagFilename string `bson:"metatag_filename,omitempty" json:"metatag_filename,omitempty"`
 
 	CreatedAt         time.Time  `bson:"created_at" json:"created_at"`
 	StartedAt         *time.Time `bson:"started_at,omitempty" json:"started_at,omitempty"`
@@ -248,4 +243,42 @@ type VisualStyle struct {
 	IsActive       bool               `bson:"is_active" json:"is_active"`
 	CreatedAt      time.Time          `bson:"created_at" json:"created_at"`
 	UpdatedAt      time.Time          `bson:"updated_at" json:"updated_at"`
+}
+type OutlineResponse struct {
+	Sections []OutlineSection `json:"sections"`
+}
+
+type OutlineSection struct {
+	Title   string `json:"title"`
+	Summary string `json:"summary"`
+}
+type HookIntroResponse struct {
+	HookIntro HookIntroContent `json:"hook_intro"`
+}
+
+type HookIntroContent struct {
+	Content   string `json:"content"`
+	WordCount int    `json:"word_count"`
+	ModeUsed  string `json:"mode_used"`
+}
+
+type SectionResponse struct {
+	Section SectionContent `json:"section"`
+}
+
+type SectionContent struct {
+	Content         string `json:"content"`
+	WordCount       int    `json:"word_count"`
+	NarrativeFormat string `json:"narrative_format"`
+}
+
+type MetaResponse struct {
+	Meta MetaContent `json:"meta"`
+}
+
+type MetaContent struct {
+	Title         string   `json:"title"`
+	Description   string   `json:"description"`
+	Tags          []string `json:"tags"`
+	ThumbnailText string   `json:"thumbnail_text"`
 }
