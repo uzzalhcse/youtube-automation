@@ -13,12 +13,15 @@ import (
 
 func (yt *YtAutomation) generateVisualPromptForChunks(scriptID primitive.ObjectID, chunks []ScriptSrt) error {
 	fmt.Printf("🎨 Starting visual prompt generation for %d chunks...\n", len(chunks))
-
+	script, err := yt.getScriptByID(scriptID)
+	if err != nil {
+		return fmt.Errorf("loading script: %w", err)
+	}
 	for i, chunk := range chunks {
 		fmt.Printf("Generating visual prompt for chunk %d/%d...\n", i+1, len(chunks))
 
 		// Generate visual prompt using Gemini
-		visualPrompts, err := yt.generateVisualPrompts(chunk.Content)
+		visualPrompts, err := yt.generateVisualPrompts(chunk.Content, script)
 		if err != nil {
 			fmt.Printf("Warning: Failed to generate prompt visual for chunk %d: %v\n", chunk.ChunkIndex, err)
 			continue

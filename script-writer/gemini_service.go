@@ -33,16 +33,6 @@ func (g *GeminiService) GenerateContent(prompt string) (string, error) {
 	return g.RetryWithExponentialBackoff(prompt, maxRetries)
 }
 
-// GenerateContextAwareContent generates content with session context
-func (g *GeminiService) GenerateContextAwareContent(session *ScriptSession, prompt string) (string, error) {
-	// Prepend context to improve coherence
-	contextPrompt := session.GetContextPrompt() + prompt
-
-	fmt.Printf("Context-aware prompt size: %d KB\n", len(contextPrompt)/1024)
-
-	return g.RetryWithExponentialBackoff(contextPrompt, maxRetries)
-}
-
 func (g *GeminiService) callAPI(prompt string) (string, error) {
 	requestBody := GeminiRequest{
 		Contents: []Content{

@@ -215,3 +215,27 @@ type TemplateResponse struct {
 	Error   string    `json:"error,omitempty"`
 	Data    *Template `json:"data,omitempty"`
 }
+type PromptTemplate struct {
+	ID           primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	ChannelID    primitive.ObjectID `bson:"channel_id,omitempty" json:"channel_id"` // nil for global templates
+	Name         string             `bson:"name" json:"name"`
+	Type         string             `bson:"type" json:"type"` // outline, script, hook_intro, etc.
+	SystemPrompt string             `bson:"system_prompt" json:"system_prompt"`
+	UserPrompt   string             `bson:"user_prompt" json:"user_prompt"`
+	Variables    []string           `bson:"variables" json:"variables"` // ["{TOPIC}", "{SECTION_COUNT}", etc.]
+	IsActive     bool               `bson:"is_active" json:"is_active"`
+	IsGlobal     bool               `bson:"is_global" json:"is_global"` // true for default templates
+	CreatedAt    time.Time          `bson:"created_at" json:"created_at"`
+	UpdatedAt    time.Time          `bson:"updated_at" json:"updated_at"`
+	Version      int                `bson:"version" json:"version"`
+}
+
+type PromptTemplateRequest struct {
+	ChannelID    string   `json:"channel_id,omitempty"`
+	Name         string   `json:"name"`
+	Type         string   `json:"type"`
+	SystemPrompt string   `json:"system_prompt"`
+	UserPrompt   string   `json:"user_prompt"`
+	Variables    []string `json:"variables,omitempty"`
+	IsGlobal     bool     `json:"is_global"`
+}

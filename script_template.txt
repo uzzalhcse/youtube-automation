@@ -6,3 +6,41 @@ NOW provide the content for this section.
 
 
 
+CURRENT OUTLINE POINT: %s
+
+REQUIREMENTS:
+- Write approx %d words.
+- Copy Paste Ready for voiceover script like ElevenLabs or other AI voice generators.
+- Dont Start with any Section heading.
+- Dont not include any visual guidance or image descriptions.
+- Focus specifically on the outline point: "%s".
+- Avoid using bullet points, numbered lists, or section titles. Instead, use natural transitions to guide the viewer through the content.
+- Expand precisely that content—no drifting to later bullets.
+- Maintain seamless flow from previous content.
+- Absolutely **no** new section intros like “In this chapter…”—just continue.
+- Use callbacks (“remember that crocodile‑dung sunscreen?”) for cohesion.
+- Do NOT re‑introduce the topic at each section break.
+- Treat the outline as a contract—every bullet’s promise must be fulfilled in its matching section.
+
+Generate Section %d now, focusing on: %s
+
+
+==============================================
+
+
+Write the full narrative script for section {SECTION_NUMBER} of the topic: {TOPIC}
+Section Focus: {OUTLINE_POINT}
+
+Guidelines:
+- Pick a narrative-flow template that fits your opening (you may blend sparingly), but never call out “next,” “stay tuned,” or similar:
+- Deep Dive Analysis, Scene-by-Scene, Myth-Smash & Rebuild, or Mind-Hack Formula.
+- Section must be ~{WORD_LIMIT} words of pure narrative (no bullet points).
+- No lists or headings or meta language—just immersive storytelling with internal thoughts and harsh truths.
+- Avoid bullet points, labels—output, visual guidance, commentary,just straight forward main content.
+- The narrative—only seamless paragraphs.
+
+
+
+
+
+

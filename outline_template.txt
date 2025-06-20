@@ -3,3 +3,11 @@ Your job is to create a long-form, engaging video script (up to 40 minutes) that
 The tone should be friendly, calm, clear, and easy to follow — with empathy and authority. Break down health benefits, foods, tips, or strategies into simple, digestible explanations supported by facts, studies (if helpful), and real-life applications.
 Your target audience is older adults (ages 55+), caregivers, and adult children of seniors who are seeking natural, science-based solutions to common age-related problems.
 NOW provide the outline for entire video script.
+IMPORTANT REQUIREMENTS:
+- Provide EXACTLY %d bullet points for the outline.
+- Each bullet should be formatted as: Title: Description.
+- No sub bullet points or nested lists in descriptions, only paragraphs.
+
+Topic: %s
+
+Please provide the outline following the template specifications exactly

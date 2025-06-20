@@ -4,3 +4,17 @@ The tone should be friendly, calm, clear, and easy to follow — with empathy an
 Your target audience is older adults (ages 55+), caregivers, and adult children of seniors who are seeking natural, science-based solutions to common age-related problems.
 NOW provide the Hook & Introduction for entire video script.
 
+CONTEXT:
+- Outline: %s
+- Topic: %s
+
+REQUIREMENTS:
+**Hook & Introduction (%d words):**
+ - Start with a relatable scenario, question, concern, or statement to hook the audience (e.g., 'Have you ever felt like your energy is fading faster than it used to?', "Tired of waking up with painful leg cramps?").
+ - Briefly introduce the topic and explain why it's important for seniors.
+ - Mention what the video will cover (e.g., 'In this video, we'll go over 5 simple habits to boost your energy and feel younger than ever!').
+ - End with a call to action, Ask them to like the video and subscribe to the channel for more helpful content.
+ - Create smooth transition to main content.
+ - Maintain consistency with the hook's tone.
+
+Please write the section now, Without labeled like "Hook & Introduction:
