@@ -1,0 +1,2 @@
+Resume image generation state
+Stop getting Duplicate chunk_visual entry on each api call

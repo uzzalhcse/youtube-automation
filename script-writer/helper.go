@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -353,54 +357,156 @@ func splitSRTByCharLimit(srtContent string, charLimit int) ([]string, error) {
 }
 
 func (yt *YtAutomation) generateVoiceOver(script Script, chunks []ScriptAudio) error {
-	var audioFiles []string
+	// Check ElevenLabs credits first
+	subInfo, err := yt.elevenLabsClient.GetSubscriptionInfo()
+	if err != nil {
+		fmt.Printf("Warning: Could not fetch subscription info: %v\n", err)
+	} else {
+		remaining := subInfo.CharacterLimit - subInfo.CharacterCount
+		fmt.Printf("📊 ElevenLabs Credits - Used: %d/%d, Remaining: %d characters\n",
+			subInfo.CharacterCount, subInfo.CharacterLimit, remaining)
 
-	// Generate individual audio files
-	for i, chunk := range chunks {
-		fmt.Printf("Generating Voice for chunk %d/%d...\n", i+1, len(chunks))
+		if remaining < 1000 {
+			fmt.Printf("⚠️  Warning: Low credits remaining (%d characters)\n", remaining)
+		}
+	}
+
+	var audioFiles []string
+	pendingChunks := yt.getPendingChunks(chunks)
+
+	fmt.Printf("📋 Total chunks: %d, Pending generation: %d\n", len(chunks), len(pendingChunks))
+
+	// Generate only pending chunks
+	for i, chunk := range pendingChunks {
+		fmt.Printf("🎵 Generating voice for chunk %d/%d (Chunk Index: %d)...\n",
+			i+1, len(pendingChunks), chunk.ChunkIndex)
+
+		// Update status to generating
+		yt.updateChunkStatus(chunk.ID, "generating", "")
 
 		// Generate speech
 		audioData, err := yt.elevenLabsClient.TextToSpeech(chunk.Content, os.Getenv("VOICE_ID"))
 		if err != nil {
-			return fmt.Errorf("Error generating speech: %v\n", err)
+			fmt.Printf("❌ Error generating speech for chunk %d: %v\n", chunk.ChunkIndex, err)
+			yt.updateChunkStatus(chunk.ID, "failed", "")
+			continue // Continue with next chunk instead of failing completely
 		}
 
 		timestamp := time.Now().Format("20060102_15_04_05")
-		filename := fmt.Sprintf("%s_voiceover_%d_%s.mp3", script.ChannelName, i, timestamp)
+		filename := fmt.Sprintf("%s_voiceover_%d_%s.mp3", script.ChannelName, chunk.ChunkIndex, timestamp)
 		path := filepath.Join("assets", "audio", filename)
 
 		if err = saveAudioFile(audioData, path); err != nil {
-			return fmt.Errorf("Error saving audio file: %v\n", err)
+			fmt.Printf("❌ Error saving audio file for chunk %d: %v\n", chunk.ChunkIndex, err)
+			yt.updateChunkStatus(chunk.ID, "failed", "")
+			continue
 		}
 
-		// Save individual chunk audio file path
-		yt.SaveScriptAudioFile(chunk.ID, path)
-		audioFiles = append(audioFiles, path)
-
-		fmt.Printf("🎨 Voice generation complete for %d/%d...\n", i+1, len(chunks))
+		// Update status to completed with file path
+		yt.updateChunkStatus(chunk.ID, "completed", path)
+		fmt.Printf("✅ Voice generation complete for chunk %d\n", chunk.ChunkIndex)
 	}
 
-	// Merge all audio files
-	fmt.Println("Merging audio files...")
+	// Collect all completed audio files (including previously generated ones)
+	audioFiles = yt.getCompletedAudioFiles(chunks)
+
+	if len(audioFiles) == 0 {
+		return fmt.Errorf("no audio files generated successfully")
+	}
+
+	// Merge all available audio files
+	fmt.Printf("🔄 Merging %d audio files...\n", len(audioFiles))
 	mergedFilename := fmt.Sprintf("%s_complete_voiceover_%s.mp3",
 		script.ChannelName,
 		time.Now().Format("20060102_15_04_05"))
 	mergedPath := filepath.Join("assets", "audio", mergedFilename)
 
 	if err := yt.mergeAudioFiles(audioFiles, mergedPath); err != nil {
-		return fmt.Errorf("Error merging audio files: %v", err)
+		return fmt.Errorf("error merging audio files: %v", err)
 	}
 
 	// Update script collection with merged audio file
 	yt.UpdateScriptCollection(script.ID, mergedPath)
 
-	// Optionally clean up individual files
-	if err := yt.cleanupTempFiles(audioFiles); err != nil {
-		fmt.Printf("Warning: Failed to cleanup temp files: %v\n", err)
+	completedCount := len(yt.getCompletedChunks(chunks))
+	fmt.Printf("✅ Voiceover generation finished! Completed: %d/%d chunks\n", completedCount, len(chunks))
+
+	if completedCount < len(chunks) {
+		fmt.Printf("ℹ️  %d chunks still pending. Run again to resume.\n", len(chunks)-completedCount)
 	}
 
-	fmt.Println("✅ Complete voiceover generation and merging finished!")
 	return nil
+}
+func (yt *YtAutomation) getPendingChunks(chunks []ScriptAudio) []ScriptAudio {
+	var pending []ScriptAudio
+	for _, chunk := range chunks {
+		if chunk.GenerationStatus != "completed" || !yt.audioFileExists(chunk.AudioFilePath) {
+			pending = append(pending, chunk)
+		}
+	}
+	return pending
+}
+
+func (yt *YtAutomation) getCompletedChunks(chunks []ScriptAudio) []ScriptAudio {
+	var completed []ScriptAudio
+	for _, chunk := range chunks {
+		updatedScriptAudio, err := yt.getScriptAudioByID(chunk.ID)
+		if err != nil {
+			fmt.Printf("Warning: Failed to load chunk %s: %v\n", chunk.ID.Hex(), err)
+			continue // Skip this chunk if it can't be loaded
+		}
+		if updatedScriptAudio.GenerationStatus == "completed" && yt.audioFileExists(chunk.AudioFilePath) {
+			completed = append(completed, chunk)
+		}
+	}
+	return completed
+}
+
+func (yt *YtAutomation) getCompletedAudioFiles(chunks []ScriptAudio) []string {
+	var audioFiles []string
+	completed := yt.getCompletedChunks(chunks)
+
+	// Sort by chunk index to maintain order
+	sort.Slice(completed, func(i, j int) bool {
+		return completed[i].ChunkIndex < completed[j].ChunkIndex
+	})
+
+	for _, chunk := range completed {
+		audioFiles = append(audioFiles, chunk.AudioFilePath)
+	}
+	return audioFiles
+}
+
+func (yt *YtAutomation) audioFileExists(filepath string) bool {
+	if filepath == "" {
+		return false
+	}
+	if _, err := os.Stat(filepath); os.IsNotExist(err) {
+		return false
+	}
+	return true
+}
+
+func (yt *YtAutomation) updateChunkStatus(chunkID primitive.ObjectID, status, audioPath string) {
+	update := bson.M{
+		"$set": bson.M{
+			"generation_status": status,
+			"updated_at":        time.Now(),
+		},
+	}
+
+	if audioPath != "" {
+		update["$set"].(bson.M)["audio_file_path"] = audioPath
+	}
+
+	_, err := scriptAudiosCollection.UpdateOne(
+		context.Background(),
+		bson.M{"_id": chunkID},
+		update,
+	)
+	if err != nil {
+		fmt.Printf("Warning: Failed to update chunk status: %v\n", err)
+	}
 }
 
 // mergeAudioFiles combines multiple audio files into one using FFmpeg

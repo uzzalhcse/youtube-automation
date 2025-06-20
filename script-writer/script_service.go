@@ -206,15 +206,8 @@ func (yt *YtAutomation) generateMetaTag(script *Script) error {
 		return fmt.Errorf("parsing meta JSON: %w", err)
 	}
 
-	updateData := bson.M{
-		"meta_title":       metaContent.Title,
-		"meta_description": metaContent.Description,
-		"meta_tags":        metaContent.Tags,
-		"thumbnail_text":   metaContent.ThumbnailText,
-	}
-
 	return yt.updateScriptInDB(script.ID, bson.M{
-		"meta": updateData,
+		"meta": metaContent,
 	})
 }
 func (yt *YtAutomation) displayOutlinePoints(points []string) {

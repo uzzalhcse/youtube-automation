@@ -42,9 +42,15 @@ type ElevenLabsClient struct {
 	APIKey string
 	Client *http.Client
 }
+type SubscriptionInfo struct {
+	CharacterCount              int   `json:"character_count"`
+	CharacterLimit              int   `json:"character_limit"`
+	CanExtendCharacterLimit     bool  `json:"can_extend_character_limit"`
+	NextCharacterCountResetUnix int64 `json:"next_character_count_reset_unix"`
+}
 
 func NewElevenLabsClient(apiKey string, proxy *Proxy) *ElevenLabsClient {
-	client := &http.Client{Timeout: 120 * time.Second}
+	client := &http.Client{Timeout: 180 * time.Second}
 
 	// Configure proxy if provided
 	if proxy != nil && proxy.Server != "" {
@@ -122,6 +128,33 @@ func (c *ElevenLabsClient) TextToSpeech(text, voiceID string) ([]byte, error) {
 	return audioData, nil
 }
 
+func (c *ElevenLabsClient) GetSubscriptionInfo() (*SubscriptionInfo, error) {
+	url := fmt.Sprintf("%s/user/subscription", BaseURL)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("error creating request: %v", err)
+	}
+
+	req.Header.Set("xi-api-key", c.APIKey)
+
+	resp, err := c.Client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("error making request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+	}
+
+	var subInfo SubscriptionInfo
+	if err := json.NewDecoder(resp.Body).Decode(&subInfo); err != nil {
+		return nil, fmt.Errorf("error decoding response: %v", err)
+	}
+
+	return &subInfo, nil
+}
 func (c *ElevenLabsClient) GetVoices() ([]map[string]interface{}, error) {
 	url := fmt.Sprintf("%s/voices", BaseURL)
 	req, err := http.NewRequest("GET", url, nil)

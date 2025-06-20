@@ -46,7 +46,7 @@ type Script struct {
 	Outline       string         `bson:"outline" json:"outline"`
 	OutlinePoints []OutlinePoint `bson:"outline_points" json:"outline_points"`
 	FullScript    string         `bson:"full_script" json:"full_script"`
-	Meta          string         `bson:"meta" json:"meta"`
+	Meta          MetaContent    `bson:"meta" json:"meta"`
 	SRT           string         `bson:"srt" json:"srt"` // SRT content for subtitles
 	FullAudioFile string         `bson:"full_audio_file,omitempty" json:"full_audio_file,omitempty"`
 
@@ -81,14 +81,16 @@ type ScriptResponse struct {
 }
 
 type ScriptAudio struct {
-	ID         primitive.ObjectID `bson:"_id,omitempty" json:"id"`
-	ScriptID   primitive.ObjectID `bson:"script_id" json:"script_id"`
-	ChunkIndex int                `bson:"chunk_index" json:"chunk_index"`
-	Content    string             `bson:"content" json:"content"`
-	CharCount  int                `bson:"char_count" json:"char_count"`
-	HasVisual  bool               `bson:"has_visual" json:"has_visual"`                     // need to remove or move main script collection
-	AudioFile  string             `bson:"audio_file,omitempty" json:"audio_file,omitempty"` // Optional audio file reference
-	CreatedAt  time.Time          `bson:"created_at" json:"created_at"`
+	ID               primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	ScriptID         primitive.ObjectID `bson:"script_id" json:"script_id"`
+	ChunkIndex       int                `bson:"chunk_index" json:"chunk_index"`
+	Content          string             `bson:"content" json:"content"`
+	CharCount        int                `bson:"char_count" json:"char_count"`
+	HasVisual        bool               `bson:"has_visual" json:"has_visual"`
+	AudioFilePath    string             `bson:"audio_file_path,omitempty" json:"audio_file_path,omitempty"`
+	GenerationStatus string             `bson:"generation_status" json:"generation_status"` // pending, completed, failed
+	CreatedAt        time.Time          `bson:"created_at" json:"created_at"`
+	UpdatedAt        time.Time          `bson:"updated_at,omitempty" json:"updated_at,omitempty"`
 }
 type ScriptSrt struct {
 	ID         primitive.ObjectID `bson:"_id,omitempty" json:"id"`

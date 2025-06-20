@@ -26,6 +26,15 @@ func (yt *YtAutomation) getChannelByID(channelID primitive.ObjectID) (*Channel, 
 	return &channel, nil
 }
 
+func (yt *YtAutomation) getScriptAudioByID(scriptAudioID primitive.ObjectID) (*ScriptAudio, error) {
+	var scriptAudio ScriptAudio
+	err := scriptAudiosCollection.FindOne(context.Background(), bson.M{"_id": scriptAudioID}).Decode(&scriptAudio)
+	if err != nil {
+		return nil, err
+	}
+	return &scriptAudio, nil
+}
+
 func (yt *YtAutomation) updateScriptStatus(scriptID primitive.ObjectID, status string) {
 	yt.updateScriptInDB(scriptID, bson.M{"status": status})
 }

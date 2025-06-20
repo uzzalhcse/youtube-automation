@@ -166,7 +166,6 @@ func main() {
 	fmt.Printf("  GET  /channels/{name}           - Get channel info\n")
 	fmt.Printf("  GET  /health                    - Health check\n")
 	fmt.Println(strings.Repeat("=", 50))
-
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 func LoadEnvironmentVariables() error {
@@ -669,12 +668,13 @@ func (yt *YtAutomation) generateAudioHandler(w http.ResponseWriter, r *http.Requ
 
 		for i, chunk := range chunks {
 			chunkDoc := ScriptAudio{
-				ScriptID:   script.ID,
-				ChunkIndex: i + 1,
-				Content:    chunk,
-				CharCount:  len(chunk),
-				HasVisual:  false,
-				CreatedAt:  time.Now(),
+				ScriptID:         script.ID,
+				ChunkIndex:       i + 1,
+				Content:          chunk,
+				CharCount:        len(chunk),
+				HasVisual:        false,
+				GenerationStatus: "pending",
+				CreatedAt:        time.Now(),
 			}
 			chunkDocs = append(chunkDocs, chunkDoc)
 		}
