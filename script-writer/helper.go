@@ -356,7 +356,7 @@ func splitSRTByCharLimit(srtContent string, charLimit int) ([]string, error) {
 	return srtChunks, nil
 }
 
-func (yt *YtAutomation) generateVoiceOver(script Script, chunks []ScriptAudio) error {
+func (yt *YtAutomation) generateVoiceOver1(script Script, chunks []ScriptAudio) error {
 	// Check ElevenLabs credits first
 	subInfo, err := yt.elevenLabsClient.GetSubscriptionInfo()
 	if err != nil {
@@ -437,7 +437,7 @@ func (yt *YtAutomation) generateVoiceOver(script Script, chunks []ScriptAudio) e
 
 	return nil
 }
-func (yt *YtAutomation) getPendingChunks(chunks []ScriptAudio) []ScriptAudio {
+func (yt *YtAutomation) getPendingChunks1(chunks []ScriptAudio) []ScriptAudio {
 	var pending []ScriptAudio
 	for _, chunk := range chunks {
 		if chunk.GenerationStatus != "completed" || !yt.audioFileExists(chunk.AudioFilePath) {
@@ -447,7 +447,7 @@ func (yt *YtAutomation) getPendingChunks(chunks []ScriptAudio) []ScriptAudio {
 	return pending
 }
 
-func (yt *YtAutomation) getCompletedChunks(chunks []ScriptAudio) []ScriptAudio {
+func (yt *YtAutomation) getCompletedChunks1(chunks []ScriptAudio) []ScriptAudio {
 	var completed []ScriptAudio
 	for _, chunk := range chunks {
 		updatedScriptAudio, err := yt.getScriptAudioByID(chunk.ID)
@@ -462,7 +462,7 @@ func (yt *YtAutomation) getCompletedChunks(chunks []ScriptAudio) []ScriptAudio {
 	return completed
 }
 
-func (yt *YtAutomation) getCompletedAudioFiles(chunks []ScriptAudio) []string {
+func (yt *YtAutomation) getCompletedAudioFiles1(chunks []ScriptAudio) []string {
 	var audioFiles []string
 	completed := yt.getCompletedChunks(chunks)
 
@@ -487,7 +487,7 @@ func (yt *YtAutomation) audioFileExists(filepath string) bool {
 	return true
 }
 
-func (yt *YtAutomation) updateChunkStatus(chunkID primitive.ObjectID, status, audioPath string) {
+func (yt *YtAutomation) updateChunkStatus1(chunkID primitive.ObjectID, status, audioPath string) {
 	update := bson.M{
 		"$set": bson.M{
 			"generation_status": status,
@@ -641,4 +641,236 @@ func (yt *YtAutomation) filterChunksNeedingGeneration(chunks []ChunkVisual) []Ch
 	fmt.Printf("Found %d chunks needing generation out of %d total\n",
 		len(needsGeneration), len(chunks))
 	return needsGeneration
+}
+
+// Fixed method to get pending chunks
+func (yt *YtAutomation) getPendingChunks(chunks []ScriptAudio) []ScriptAudio {
+	var pending []ScriptAudio
+	for _, chunk := range chunks {
+		// Refresh chunk data from database to get latest status
+		updatedChunk, err := yt.getScriptAudioByID(chunk.ID)
+		if err != nil {
+			fmt.Printf("Warning: Failed to load chunk %s, treating as pending: %v\n", chunk.ID.Hex(), err)
+			pending = append(pending, chunk)
+			continue
+		}
+
+		// Check if chunk needs generation
+		if updatedChunk.GenerationStatus != "completed" || !yt.audioFileExists(updatedChunk.AudioFilePath) {
+			pending = append(pending, *updatedChunk)
+		}
+	}
+	fmt.Printf("📋 Found %d pending chunks out of %d total\n", len(pending), len(chunks))
+	return pending
+}
+
+// Fixed method to get completed chunks
+func (yt *YtAutomation) getCompletedChunks(chunks []ScriptAudio) []ScriptAudio {
+	var completed []ScriptAudio
+	for _, chunk := range chunks {
+		// Refresh chunk data from database to get latest status
+		updatedChunk, err := yt.getScriptAudioByID(chunk.ID)
+		if err != nil {
+			fmt.Printf("Warning: Failed to load chunk %s: %v\n", chunk.ID.Hex(), err)
+			continue
+		}
+
+		// Check if chunk is completed and file exists
+		if updatedChunk.GenerationStatus == "completed" && yt.audioFileExists(updatedChunk.AudioFilePath) {
+			completed = append(completed, *updatedChunk)
+		}
+	}
+	fmt.Printf("✅ Found %d completed chunks\n", len(completed))
+	return completed
+}
+
+// Fixed method to get completed audio files
+func (yt *YtAutomation) getCompletedAudioFiles(chunks []ScriptAudio) []string {
+	var audioFiles []string
+	completed := yt.getCompletedChunks(chunks)
+
+	// Sort by chunk index to maintain order
+	sort.Slice(completed, func(i, j int) bool {
+		return completed[i].ChunkIndex < completed[j].ChunkIndex
+	})
+
+	for _, chunk := range completed {
+		if chunk.AudioFilePath != "" && yt.audioFileExists(chunk.AudioFilePath) {
+			audioFiles = append(audioFiles, chunk.AudioFilePath)
+			fmt.Printf("📁 Added audio file: %s (Chunk %d)\n", chunk.AudioFilePath, chunk.ChunkIndex)
+		} else {
+			fmt.Printf("⚠️  Warning: Completed chunk %d has no valid audio file path\n", chunk.ChunkIndex)
+		}
+	}
+
+	fmt.Printf("📊 Total audio files collected: %d\n", len(audioFiles))
+	return audioFiles
+}
+
+// Fixed method to update chunk status
+func (yt *YtAutomation) updateChunkStatus(chunkID primitive.ObjectID, status, audioPath string) {
+	update := bson.M{
+		"$set": bson.M{
+			"generation_status": status,
+			"updated_at":        time.Now(),
+		},
+	}
+
+	if audioPath != "" {
+		update["$set"].(bson.M)["audio_file_path"] = audioPath
+	}
+
+	result, err := scriptAudiosCollection.UpdateOne(
+		context.Background(),
+		bson.M{"_id": chunkID},
+		update,
+	)
+
+	if err != nil {
+		fmt.Printf("❌ Error updating chunk status: %v\n", err)
+		return
+	}
+
+	if result.MatchedCount == 0 {
+		fmt.Printf("⚠️  Warning: No chunk found with ID %s\n", chunkID.Hex())
+	} else {
+		fmt.Printf("✅ Updated chunk %s: status=%s, path=%s\n", chunkID.Hex(), status, audioPath)
+	}
+}
+
+// Enhanced debug method
+func (yt *YtAutomation) debugChunks(chunks []ScriptAudio) {
+	fmt.Println("\n🔍 Debug: Chunk Status Overview")
+	fmt.Println("================================")
+
+	statusCount := make(map[string]int)
+
+	for i, chunk := range chunks {
+		// Get fresh data from database
+		updatedChunk, err := yt.getScriptAudioByID(chunk.ID)
+		if err != nil {
+			fmt.Printf("❌ Chunk %d (Index: %d) - Failed to load from DB: %v\n", i+1, chunk.ChunkIndex, err)
+			continue
+		}
+
+		statusCount[updatedChunk.GenerationStatus]++
+
+		fmt.Printf("Chunk %d (Index: %d):\n", i+1, updatedChunk.ChunkIndex)
+		fmt.Printf("  ID: %s\n", updatedChunk.ID.Hex())
+		fmt.Printf("  Status: %s\n", updatedChunk.GenerationStatus)
+		fmt.Printf("  AudioFilePath: %s\n", updatedChunk.AudioFilePath)
+		fmt.Printf("  Content Length: %d chars\n", len(updatedChunk.Content))
+
+		if updatedChunk.AudioFilePath != "" {
+			if yt.audioFileExists(updatedChunk.AudioFilePath) {
+				fmt.Printf("  File Exists: ✅\n")
+			} else {
+				fmt.Printf("  File Exists: ❌\n")
+			}
+		} else {
+			fmt.Printf("  File Path: ❌ Empty\n")
+		}
+		fmt.Println()
+	}
+
+	fmt.Printf("📊 Status Summary: %+v\n", statusCount)
+	fmt.Println("================================\n")
+}
+
+// Updated generateVoiceOver method with better debugging
+func (yt *YtAutomation) generateVoiceOver(script Script, chunks []ScriptAudio) error {
+	// Check ElevenLabs credits first
+	subInfo, err := yt.elevenLabsClient.GetSubscriptionInfo()
+	if err != nil {
+		fmt.Printf("Warning: Could not fetch subscription info: %v\n", err)
+	} else {
+		remaining := subInfo.CharacterLimit - subInfo.CharacterCount
+		fmt.Printf("📊 ElevenLabs Credits - Used: %d/%d, Remaining: %d characters\n",
+			subInfo.CharacterCount, subInfo.CharacterLimit, remaining)
+
+		if remaining < 1000 {
+			fmt.Printf("⚠️  Warning: Low credits remaining (%d characters)\n", remaining)
+		}
+	}
+
+	// Debug chunks before processing
+	yt.debugChunks(chunks)
+
+	var audioFiles []string
+	pendingChunks := yt.getPendingChunks(chunks)
+
+	fmt.Printf("📋 Total chunks: %d, Pending generation: %d\n", len(chunks), len(pendingChunks))
+
+	// Generate only pending chunks
+	for i, chunk := range pendingChunks {
+		fmt.Printf("🎵 Generating voice for chunk %d/%d (Chunk Index: %d)...\n",
+			i+1, len(pendingChunks), chunk.ChunkIndex)
+
+		// Update status to generating
+		yt.updateChunkStatus(chunk.ID, "generating", "")
+
+		// Generate speech
+		audioData, err := yt.elevenLabsClient.TextToSpeech(chunk.Content, os.Getenv("VOICE_ID"))
+		if err != nil {
+			fmt.Printf("❌ Error generating speech for chunk %d: %v\n", chunk.ChunkIndex, err)
+			yt.updateChunkStatus(chunk.ID, "failed", "")
+			continue // Continue with next chunk instead of failing completely
+		}
+
+		timestamp := time.Now().Format("20060102_150405")
+		filename := fmt.Sprintf("%s_voiceover_%d_%s.mp3", script.ChannelName, chunk.ChunkIndex, timestamp)
+		path := filepath.Join("assets", "audio", filename)
+
+		// Ensure directory exists
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			fmt.Printf("❌ Error creating directory for chunk %d: %v\n", chunk.ChunkIndex, err)
+			yt.updateChunkStatus(chunk.ID, "failed", "")
+			continue
+		}
+
+		if err = saveAudioFile(audioData, path); err != nil {
+			fmt.Printf("❌ Error saving audio file for chunk %d: %v\n", chunk.ChunkIndex, err)
+			yt.updateChunkStatus(chunk.ID, "failed", "")
+			continue
+		}
+
+		// Update status to completed with file path
+		yt.updateChunkStatus(chunk.ID, "completed", path)
+		fmt.Printf("✅ Voice generation complete for chunk %d, saved to: %s\n", chunk.ChunkIndex, path)
+	}
+
+	// Debug chunks after processing
+	fmt.Println("🔄 After generation:")
+	yt.debugChunks(chunks)
+
+	// Collect all completed audio files (including previously generated ones)
+	audioFiles = yt.getCompletedAudioFiles(chunks)
+
+	if len(audioFiles) == 0 {
+		fmt.Printf("❌ No completed audio files found!\n")
+		return fmt.Errorf("no audio files generated successfully")
+	}
+
+	// Merge all available audio files
+	fmt.Printf("🔄 Merging %d audio files...\n", len(audioFiles))
+	mergedFilename := fmt.Sprintf("%s_complete_voiceover_%s.mp3",
+		script.ChannelName,
+		time.Now().Format("20060102_150405"))
+	mergedPath := filepath.Join("assets", "audio", mergedFilename)
+
+	if err := yt.mergeAudioFiles(audioFiles, mergedPath); err != nil {
+		return fmt.Errorf("error merging audio files: %v", err)
+	}
+
+	// Update script collection with merged audio file
+	yt.UpdateScriptCollection(script.ID, mergedPath)
+
+	completedCount := len(yt.getCompletedChunks(chunks))
+	fmt.Printf("✅ Voiceover generation finished! Completed: %d/%d chunks\n", completedCount, len(chunks))
+
+	if completedCount < len(chunks) {
+		fmt.Printf("ℹ️  %d chunks still pending. Run again to resume.\n", len(chunks)-completedCount)
+	}
+
+	return nil
 }
