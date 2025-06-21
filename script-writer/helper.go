@@ -626,3 +626,19 @@ func fixJSONFormatting(jsonStr string) string {
 
 	return strings.Join(cleanLines, "\n")
 }
+func (yt *YtAutomation) filterChunksNeedingGeneration(chunks []ChunkVisual) []ChunkVisual {
+	var needsGeneration []ChunkVisual
+
+	for _, chunk := range chunks {
+		// Skip if already has image_path
+		if chunk.ImagePath != "" {
+			fmt.Printf("Skipping chunk %d - already has image\n", chunk.ChunkIndex)
+			continue
+		}
+		needsGeneration = append(needsGeneration, chunk)
+	}
+
+	fmt.Printf("Found %d chunks needing generation out of %d total\n",
+		len(needsGeneration), len(chunks))
+	return needsGeneration
+}

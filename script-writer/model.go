@@ -101,18 +101,28 @@ type ScriptSrt struct {
 	CreatedAt  time.Time          `bson:"created_at" json:"created_at"`
 }
 type ChunkVisual struct {
-	ID           primitive.ObjectID `bson:"_id,omitempty" json:"id"`
-	ScriptID     primitive.ObjectID `bson:"script_id" json:"script_id"`
-	ChunkID      primitive.ObjectID `bson:"chunk_id" json:"chunk_id"`
-	ChunkIndex   int                `bson:"chunk_index" json:"chunk_index"`
-	Prompt       string             `bson:"prompt" json:"prompt"`
-	PromptIndex  int                `bson:"prompt_index" json:"prompt_index"` // Index of the prompt in the chunk
-	StartTime    string             `bson:"start_time" json:"start_time"`
-	EndTime      string             `bson:"end_time" json:"end_time"`
-	ImagePath    string             `bson:"image_path,omitempty" json:"image_path,omitempty"` // Optional image path
-	Emotion      string             `bson:"emotion" json:"emotion"`
-	SceneConcept string             `bson:"scene_concept" json:"scene_concept"`
-	CreatedAt    time.Time          `bson:"created_at" json:"created_at"`
+	ID                  primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	ScriptID            primitive.ObjectID `bson:"script_id" json:"script_id"`
+	ChunkID             primitive.ObjectID `bson:"chunk_id" json:"chunk_id"`
+	ChunkIndex          int                `bson:"chunk_index" json:"chunk_index"`
+	Prompt              string             `bson:"prompt" json:"prompt"`
+	PromptIndex         int                `bson:"prompt_index" json:"prompt_index"` // Index of the prompt in the chunk
+	StartTime           string             `bson:"start_time" json:"start_time"`
+	EndTime             string             `bson:"end_time" json:"end_time"`
+	ImagePath           string             `bson:"image_path,omitempty" json:"image_path,omitempty"` // Optional image path
+	Status              string             `bson:"status" json:"status"`                             // "pending", "processing", "completed", "failed"
+	RetryCount          int                `bson:"retry_count" json:"retry_count"`
+	Emotion             string             `bson:"emotion" json:"emotion"`
+	APIKeyID            primitive.ObjectID `bson:"api_key_id,omitempty" json:"api_key_id,omitempty"`
+	APIProvider         string             `bson:"api_provider,omitempty" json:"api_provider,omitempty"`
+	SeedUsed            int                `bson:"seed_used,omitempty" json:"seed_used,omitempty"`
+	ProcessingAttempts  int                `bson:"processing_attempts,omitempty" json:"processing_attempts,omitempty"`
+	ErrorMessage        string             `bson:"error_message,omitempty" json:"error_message,omitempty"`
+	ProcessingStartedAt *time.Time         `bson:"processing_started_at,omitempty" json:"processing_started_at,omitempty"`
+	CompletedAt         *time.Time         `bson:"completed_at,omitempty" json:"completed_at,omitempty"`
+	FailedAt            *time.Time         `bson:"failed_at,omitempty" json:"failed_at,omitempty"`
+	CreatedAt           time.Time          `bson:"created_at" json:"created_at"`
+	UpdatedAt           time.Time          `bson:"updated_at" json:"updated_at"`
 }
 type VisualPromptResponse struct {
 	StartTime string `bson:"start_time" json:"start_time"`
@@ -283,4 +293,13 @@ type MetaContent struct {
 	Description   string   `json:"description"`
 	Tags          []string `json:"tags"`
 	ThumbnailText string   `json:"thumbnail_text"`
+}
+type APIKey struct {
+	ID         primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	KeyValue   string             `bson:"key_value" json:"key_value"`
+	Provider   string             `bson:"provider" json:"provider"` // e.g., "elevenlabs", "whisk"
+	IsActive   bool               `bson:"is_active" json:"is_active"`
+	LastUsed   time.Time          `bson:"last_used" json:"last_used"`
+	ErrorCount int                `bson:"error_count" json:"error_count"`
+	CreatedAt  time.Time          `bson:"created_at" json:"created_at"`
 }

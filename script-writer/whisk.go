@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -238,12 +237,21 @@ func NewHTTPClient(config HttpConfig) *HTTPClient {
 	}
 }
 
-// MakeRequest makes a single HTTP POST request with the given payload, with retry logic
-// MakeRequest makes a single HTTP POST request with the given payload, with retry logic
 func (yt *YtAutomation) MakeRequest(payload interface{}) (*APIResponse, error) {
 	var lastErr error
 
 	for attempt := 0; attempt <= yt.googleHttpClient.config.RetryAttempts; attempt++ {
+		// Get API key from database based on tool
+		provider := "whisk"
+		if yt.googleHttpClient.config.Tool == "imagefx" {
+			provider = "imagefx" // or whatever provider name you use for imagefx
+		}
+
+		apiKey, err := yt.apiKeyManager.GetActiveKey(provider)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get API key: %w", err)
+		}
+
 		// Apply rate limiting if configured
 		if yt.googleHttpClient.rateLimiter != nil {
 			yt.googleHttpClient.rateLimiter.Wait()
@@ -269,9 +277,9 @@ func (yt *YtAutomation) MakeRequest(payload interface{}) (*APIResponse, error) {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
 
-		// Set headers
+		// Set headers - use API key from database
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", yt.googleHttpClient.config.AuthToken)
+		req.Header.Set("Authorization", apiKey.KeyValue)
 
 		// Add custom headers
 		for key, value := range yt.googleHttpClient.config.Headers {
@@ -301,13 +309,29 @@ func (yt *YtAutomation) MakeRequest(payload interface{}) (*APIResponse, error) {
 			return nil, lastErr
 		}
 
+		// Log API key usage for successful requests
+		if resp.StatusCode == http.StatusOK {
+			fmt.Printf("Successfully used API key: %s (Provider: %s)\n",
+				apiKey.ID.Hex()[:8]+"...", apiKey.Provider)
+		}
+
 		// Handle rate limiting (429) and server errors (5xx) with retry
+		// Flag the current API key as problematic and try with a new one
 		if resp.StatusCode == 429 || (resp.StatusCode >= 500 && resp.StatusCode < 600) {
 			lastErr = fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(body))
 
+			// Flag the current API key as problematic
+			flagErr := yt.apiKeyManager.FlagKeyAsProblematic(apiKey.ID, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(body)))
+			if flagErr != nil {
+				log.Printf("Warning: Failed to flag API key as problematic: %v", flagErr)
+			} else {
+				fmt.Printf("Flagged API key %s as problematic due to %d error\n",
+					apiKey.ID.Hex()[:8]+"...", resp.StatusCode)
+			}
+
 			if attempt < yt.googleHttpClient.config.RetryAttempts {
-				fmt.Printf("Request failed with status %d, retrying in %v (attempt %d/%d)...\n",
-					resp.StatusCode, yt.calculateBackoffDelay(attempt), attempt+1, yt.googleHttpClient.config.RetryAttempts+1)
+				fmt.Printf("Request failed with status %d, flagging API key and retrying with new key (attempt %d/%d)...\n",
+					resp.StatusCode, attempt+1, yt.googleHttpClient.config.RetryAttempts+1)
 				yt.waitWithBackoff(attempt)
 				continue
 			}
@@ -321,6 +345,16 @@ func (yt *YtAutomation) MakeRequest(payload interface{}) (*APIResponse, error) {
 
 		// Check for other error status codes (don't retry client errors except 429)
 		if resp.StatusCode != http.StatusOK {
+			// For other 4xx errors that might indicate API key issues, flag the key
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != 400 {
+				flagErr := yt.apiKeyManager.FlagKeyAsProblematic(apiKey.ID, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(body)))
+				if flagErr != nil {
+					log.Printf("Warning: Failed to flag API key as problematic: %v", flagErr)
+				} else {
+					fmt.Printf("Flagged API key %s as problematic due to %d error\n",
+						apiKey.ID.Hex()[:8]+"...", resp.StatusCode)
+				}
+			}
 			return nil, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(body))
 		}
 
@@ -461,7 +495,8 @@ func (yt *YtAutomation) MakeConcurrentRequests(jobs []RequestJob) error {
 			defer func() { <-semaphore }()
 
 			result := JobResult{ID: j.ID}
-
+			// Update status to processing
+			yt.updateVisualChunkStatus(j.chunkVisual.ID, "processing")
 			// Make the request (with built-in rate limiting and retries)
 			response, err := yt.MakeRequest(j.Payload)
 			if err != nil {
@@ -469,10 +504,18 @@ func (yt *YtAutomation) MakeConcurrentRequests(jobs []RequestJob) error {
 				if strings.Contains(err.Error(), "content policy violation") {
 					result.Skipped = true
 					result.Error = err
+					yt.updateVisualChunkStatus(j.chunkVisual.ID, "skipped")
 					fmt.Printf("Skipping request %s due to content policy violation\n", j.ID)
+				} else if strings.Contains(err.Error(), "no active API keys found") {
+					// Handle case where no API keys are available
+					result.Success = false
+					result.Error = err
+					yt.updateVisualChunkWithAPIKeyError(j.chunkVisual.ID, "No active API keys available")
+					fmt.Printf("Request %s failed due to no available API keys\n", j.ID)
 				} else {
 					result.Success = false
 					result.Error = err
+					yt.updateVisualChunkStatus(j.chunkVisual.ID, "failed")
 				}
 
 				mu.Lock()
@@ -488,6 +531,7 @@ func (yt *YtAutomation) MakeConcurrentRequests(jobs []RequestJob) error {
 			if err != nil {
 				result.Success = false
 				result.Error = fmt.Errorf("processing %s failed: %w", j.ID, err)
+				yt.updateVisualChunkStatus(j.chunkVisual.ID, "failed")
 
 				mu.Lock()
 				results = append(results, result)
@@ -498,6 +542,13 @@ func (yt *YtAutomation) MakeConcurrentRequests(jobs []RequestJob) error {
 			}
 
 			result.Success = true
+			yt.updateVisualChunkStatus(j.chunkVisual.ID, "completed")
+			// Update processing info if available
+			if payload, ok := j.Payload.(RequestPayload); ok {
+				yt.updateVisualChunkWithProcessingInfo(j.chunkVisual.ID, payload.Seed, 1)
+			} else if payload, ok := j.Payload.(ImageFXPayload); ok {
+				yt.updateVisualChunkWithProcessingInfo(j.chunkVisual.ID, payload.UserInput.Seed, 1)
+			}
 			mu.Lock()
 			results = append(results, result)
 			completed++
@@ -641,48 +692,6 @@ func (yt *YtAutomation) CreateJobsFromPrompts(chunkVisuals []ChunkVisual, option
 	}
 
 	return jobs
-}
-
-// LoadEnv loads environment variables from a .env file
-func LoadEnv(filename string) error {
-	file, err := os.Open(filename)
-	if err != nil {
-		if os.IsNotExist(err) {
-			fmt.Printf("Warning: %s file not found, using default values\n", filename)
-			return nil
-		}
-		return fmt.Errorf("failed to open %s: %w", filename, err)
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-
-		// Skip empty lines and comments
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		// Parse key=value pairs
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-
-		// Remove quotes if present
-		if len(value) >= 2 && ((value[0] == '"' && value[len(value)-1] == '"') ||
-			(value[0] == '\'' && value[len(value)-1] == '\'')) {
-			value = value[1 : len(value)-1]
-		}
-
-		os.Setenv(key, value)
-	}
-
-	return scanner.Err()
 }
 
 // GetEnv gets an environment variable with a default value

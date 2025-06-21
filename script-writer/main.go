@@ -34,6 +34,7 @@ var (
 	videoStatusCollection     *mongo.Collection
 	promptTemplatesCollection *mongo.Collection
 	visualStylesCollection    *mongo.Collection
+	apiKeysCollection         *mongo.Collection
 )
 
 const (
@@ -44,6 +45,7 @@ const (
 )
 const (
 	defaultAIProvider = ProviderGemini // ProviderGemini or ProviderOpenRouter
+	APITokenProvider  = "whisk"        // whisk ,elevenlabs
 )
 
 type YtAutomation struct {
@@ -54,6 +56,7 @@ type YtAutomation struct {
 	elevenLabsClient *elevenlabs.ElevenLabsClient
 	client           *http.Client
 	googleHttpClient *HTTPClient
+	apiKeyManager    *APIKeyManager
 }
 
 func NewYtAutomation(mongoClient *mongo.Client, templateService *TemplateService, geminiService *GeminiService, config HttpConfig) *YtAutomation {
@@ -94,6 +97,7 @@ func NewYtAutomation(mongoClient *mongo.Client, templateService *TemplateService
 			rng:         rand.New(rand.NewSource(time.Now().UnixNano())),
 			rateLimiter: rateLimiter,
 		},
+		apiKeyManager: &APIKeyManager{},
 	}
 }
 func main() {
@@ -105,10 +109,6 @@ func main() {
 		os.Exit(1)
 	}
 	httpConfig := LoadConfigFromEnv()
-	// Validate required configuration
-	if httpConfig.AuthToken == "" {
-		log.Fatal("API_AUTH_TOKEN is required. Please set it in your .env file or environment variables.")
-	}
 	// Validate tool selection
 	if httpConfig.Tool != "whisk" && httpConfig.Tool != "imagefx" {
 		log.Fatalf("Invalid tool: %s. Must be 'whisk' or 'imagefx'", httpConfig.Tool)
@@ -128,7 +128,15 @@ func main() {
 	yt := NewYtAutomation(mClient, templateService, geminiService, httpConfig)
 
 	defer yt.mongoClient.Disconnect(context.Background())
+	if err := seedAPIKeys(); err != nil {
+		log.Printf("Warning: Failed to seed API keys: %v", err)
+		log.Printf("You may need to manually add API keys to the database")
+	}
 
+	// List current API keys for debugging
+	if err := listAPIKeys(); err != nil {
+		log.Printf("Warning: Failed to list API keys: %v", err)
+	}
 	// Setup HTTP routes
 	http.HandleFunc("/generate-script", yt.generateScriptHandler) // step 1
 	http.HandleFunc("/scripts/", yt.getScriptStatusHandler)
@@ -204,6 +212,7 @@ func initializeMongoDB() (*mongo.Client, error) {
 	videoStatusCollection = database.Collection("script_videos")
 	promptTemplatesCollection = database.Collection("prompt_templates")
 	visualStylesCollection = database.Collection("visual_styles")
+	apiKeysCollection = database.Collection("api_keys")
 
 	// Create indexes
 	if err := createIndexes(); err != nil {
@@ -927,7 +936,6 @@ func (yt *YtAutomation) generateVisualImagePromptHandler(w http.ResponseWriter, 
 	var chunkVisuals []ChunkVisual
 
 	if existingCount > 0 {
-
 		findOptions := options.Find().SetSort(bson.M{"chunk_index": 1})
 		cursor, err := chunkVisualsCollection.Find(
 			context.Background(),
@@ -944,6 +952,21 @@ func (yt *YtAutomation) generateVisualImagePromptHandler(w http.ResponseWriter, 
 			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error decoding existing chunks: %v", err))
 			return
 		}
+		chunkVisuals = yt.filterChunksNeedingGeneration(chunkVisuals)
+
+		if len(chunkVisuals) == 0 {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"message": "All chunks already have images generated",
+				"data":    map[string]interface{}{"script_id": path},
+			})
+			return
+		}
+	} else {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"message": "No visual chunks found for this script",
+			"data":    map[string]interface{}{"script_id": path},
+		})
+		return
 	}
 	go func() {
 		if err := yt.generateVisualImagePromptForChunks(objectID, chunkVisuals); err != nil {
