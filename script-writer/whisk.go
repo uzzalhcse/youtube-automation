@@ -586,7 +586,7 @@ func (yt *YtAutomation) MakeConcurrentRequests(jobs []RequestJob) error {
 			// Update status to processing
 			yt.updateVisualChunkStatus(j.chunkVisual.ID, "processing")
 			// Make the request (with built-in rate limiting and retries)
-			response, err := yt.MakeRequestWithRetry(j.Payload, 2)
+			response, err := yt.MakeRequestWithRetry(j.Payload, 3)
 			if err != nil {
 				// Check if it's still a content policy violation after retries
 				if strings.Contains(err.Error(), "content policy violation") {
