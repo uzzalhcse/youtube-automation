@@ -475,6 +475,94 @@ type JobResult struct {
 	Skipped bool // true if skipped due to content policy violation
 }
 
+// Add this function to sanitize prompts for content policy violations
+func (yt *YtAutomation) SanitizePrompt(originalPrompt string) string {
+	// Simple sanitization - remove potentially problematic words/phrases
+	// You can expand this list based on your needs
+	problematicWords := []string{
+		"violence", "violent", "blood", "poison", "death", "kill", "murder",
+		"nude", "naked", "sexual", "explicit", "adult", "porn", "nsfw",
+		"weapon", "gun", "knife", "bomb", "explosive", "terrorist",
+		"hate", "racism", "discrimination", "offensive",
+	}
+
+	sanitized := strings.ToLower(originalPrompt)
+	for _, word := range problematicWords {
+		sanitized = strings.ReplaceAll(sanitized, word, "")
+	}
+
+	// Clean up extra spaces and add safe content
+	sanitized = strings.TrimSpace(strings.ReplaceAll(sanitized, "  ", " "))
+	if sanitized == "" {
+		sanitized = "a beautiful peaceful landscape"
+	} else {
+		sanitized = "a safe and family-friendly " + sanitized
+	}
+
+	return sanitized
+}
+
+// Modified MakeRequestWithRetry method that handles content policy violations
+func (yt *YtAutomation) MakeRequestWithRetry(originalPayload interface{}, maxContentRetries int) (*APIResponse, error) {
+	var lastErr error
+
+	for contentRetry := 0; contentRetry <= maxContentRetries; contentRetry++ {
+		// Create a copy of the payload for this attempt
+		var payload interface{}
+
+		if contentRetry > 0 {
+			// Modify the prompt for retry attempts
+			switch p := originalPayload.(type) {
+			case RequestPayload:
+				modifiedPayload := p
+				if contentRetry == 1 {
+					modifiedPayload.Prompt = yt.SanitizePrompt(p.Prompt)
+				} else {
+					// For subsequent retries, make it even more generic
+					modifiedPayload.Prompt = fmt.Sprintf("a safe and peaceful artistic representation of %s", yt.SanitizePrompt(p.Prompt))
+				}
+				payload = modifiedPayload
+				fmt.Printf("Content retry %d: Modified prompt to: %s\n", contentRetry, modifiedPayload.Prompt)
+
+			case ImageFXPayload:
+				modifiedPayload := p
+				if len(p.UserInput.Prompts) > 0 {
+					if contentRetry == 1 {
+						modifiedPayload.UserInput.Prompts[0] = yt.SanitizePrompt(p.UserInput.Prompts[0])
+					} else {
+						modifiedPayload.UserInput.Prompts[0] = fmt.Sprintf("a safe and peaceful artistic representation of %s", yt.SanitizePrompt(p.UserInput.Prompts[0]))
+					}
+					payload = modifiedPayload
+					fmt.Printf("Content retry %d: Modified prompt to: %s\n", contentRetry, modifiedPayload.UserInput.Prompts[0])
+				}
+			}
+		} else {
+			payload = originalPayload
+		}
+
+		// Use the existing MakeRequest method
+		response, err := yt.MakeRequest(payload)
+		if err != nil {
+			// Check if it's a content policy violation
+			if strings.Contains(err.Error(), "content policy violation") {
+				lastErr = err
+				if contentRetry < maxContentRetries {
+					fmt.Printf("Content policy violation detected, retrying with sanitized prompt (attempt %d/%d)\n",
+						contentRetry+1, maxContentRetries+1)
+					continue
+				}
+			}
+			// For other errors, return immediately
+			return nil, err
+		}
+
+		return response, nil
+	}
+
+	// If we exhausted all content retries
+	return nil, fmt.Errorf("content policy violation persists after %d sanitization attempts: %w", maxContentRetries+1, lastErr)
+}
+
 // MakeConcurrentRequests makes multiple requests concurrently with proper rate limiting
 func (yt *YtAutomation) MakeConcurrentRequests(jobs []RequestJob) error {
 	// Create a semaphore to limit concurrency
@@ -498,14 +586,14 @@ func (yt *YtAutomation) MakeConcurrentRequests(jobs []RequestJob) error {
 			// Update status to processing
 			yt.updateVisualChunkStatus(j.chunkVisual.ID, "processing")
 			// Make the request (with built-in rate limiting and retries)
-			response, err := yt.MakeRequest(j.Payload)
+			response, err := yt.MakeRequestWithRetry(j.Payload, 2)
 			if err != nil {
-				// Check if it's a content policy violation
+				// Check if it's still a content policy violation after retries
 				if strings.Contains(err.Error(), "content policy violation") {
 					result.Skipped = true
 					result.Error = err
 					yt.updateVisualChunkStatus(j.chunkVisual.ID, "skipped")
-					fmt.Printf("Skipping request %s due to content policy violation\n", j.ID)
+					fmt.Printf("Skipping request %s - content policy violation persists after sanitization attempts\n", j.ID)
 				} else if strings.Contains(err.Error(), "no active API keys found") {
 					// Handle case where no API keys are available
 					result.Success = false
