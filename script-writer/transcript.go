@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -30,6 +31,20 @@ type TranscriptResponse struct {
 }
 
 func (yt *YtAutomation) callTranscriptAPI(payload TranscriptPayload) (string, error) {
+	// Debug environment variable
+	apiURL := os.Getenv("TRANSCRIPT_SERVER_API_URL")
+	fmt.Printf("TRANSCRIPT_SERVER_API_URL: '%s'\n", apiURL)
+	if apiURL == "" {
+		return "", fmt.Errorf("TRANSCRIPT_SERVER_API_URL environment variable is not set")
+	}
+
+	// Check if file exists and get its size
+	fileInfo, err := os.Stat(payload.AudioPath)
+	if err != nil {
+		return "", fmt.Errorf("audio file stat error: %w", err)
+	}
+	fmt.Printf("Audio file: %s, Size: %d bytes\n", payload.AudioPath, fileInfo.Size())
+
 	// Create a buffer to store the form data
 	var requestBody bytes.Buffer
 	writer := multipart.NewWriter(&requestBody)
@@ -48,10 +63,11 @@ func (yt *YtAutomation) callTranscriptAPI(payload TranscriptPayload) (string, er
 	}
 
 	// Copy file content to form
-	_, err = io.Copy(audioWriter, audioFile)
+	bytesWritten, err := io.Copy(audioWriter, audioFile)
 	if err != nil {
 		return "", fmt.Errorf("copying file content: %w", err)
 	}
+	fmt.Printf("Bytes written to form: %d\n", bytesWritten)
 
 	// Add other form fields
 	err = writer.WriteField("language", payload.Language)
@@ -70,7 +86,11 @@ func (yt *YtAutomation) callTranscriptAPI(payload TranscriptPayload) (string, er
 		return "", fmt.Errorf("closing form writer: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/transcribe", os.Getenv("TRANSCRIPT_SERVER_API_URL"))
+	fmt.Printf("Total request body size: %d bytes\n", requestBody.Len())
+
+	url := fmt.Sprintf("%s/transcribe", apiURL)
+	fmt.Printf("Request URL: %s\n", url)
+
 	// Create the HTTP request
 	req, err := http.NewRequest("POST", url, &requestBody)
 	if err != nil {
@@ -78,18 +98,54 @@ func (yt *YtAutomation) callTranscriptAPI(payload TranscriptPayload) (string, er
 	}
 
 	// Set headers
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("User-Agent", os.Getenv("USER_AGENT"))
+	contentType := writer.FormDataContentType()
+	req.Header.Set("Content-Type", contentType)
+	fmt.Printf("Content-Type: %s\n", contentType)
+
+	// Only set User-Agent if it's not empty
+	userAgent := os.Getenv("USER_AGENT")
+	if userAgent != "" {
+		req.Header.Set("User-Agent", userAgent)
+		fmt.Printf("User-Agent: %s\n", userAgent)
+	} else {
+		fmt.Println("User-Agent not set (empty environment variable)")
+	}
+
+	fmt.Printf("Request headers: %+v\n", req.Header)
+
+	// Use longer timeout for large files
+	client := &http.Client{
+		Timeout: 10 * time.Minute, // Increased timeout
+	}
+
+	fmt.Println("Sending HTTP request...")
+	startTime := time.Now()
 
 	// Send the request
-	resp, err := yt.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
+		fmt.Printf("HTTP request failed after %v: %v\n", time.Since(startTime), err)
+
+		// Check for specific error types
+		if netErr, ok := err.(net.Error); ok {
+			if netErr.Timeout() {
+				fmt.Println("Error type: Network timeout")
+			}
+			if netErr.Temporary() {
+				fmt.Println("Error type: Temporary network error")
+			}
+		}
+
 		return "", fmt.Errorf("sending request: %w", err)
 	}
 	defer resp.Body.Close()
 
+	fmt.Printf("Response received after %v, Status: %d\n", time.Since(startTime), resp.StatusCode)
+	fmt.Printf("Response headers: %+v\n", resp.Header)
+
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		fmt.Printf("Error response body: %s\n", string(body))
 		return "", fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -98,18 +154,22 @@ func (yt *YtAutomation) callTranscriptAPI(payload TranscriptPayload) (string, er
 		return "", fmt.Errorf("reading response: %w", err)
 	}
 
+	fmt.Printf("Response body length: %d bytes\n", len(body))
+
 	var transcriptResponse TranscriptResponse
 	if err := json.Unmarshal(body, &transcriptResponse); err != nil {
+		fmt.Printf("JSON unmarshal error. Response body: %s\n", string(body))
 		return "", fmt.Errorf("unmarshalling response: %w", err)
 	}
 
 	if len(transcriptResponse.SRT) == 0 || transcriptResponse.SRT == "" {
+		fmt.Printf("Empty SRT in response: %+v\n", transcriptResponse)
 		return "", fmt.Errorf("no content in response")
 	}
 
+	fmt.Printf("Successfully received SRT content, length: %d\n", len(transcriptResponse.SRT))
 	return transcriptResponse.SRT, nil
 }
-
 func (yt *YtAutomation) GenerateSRT(payload TranscriptPayload) (string, error) {
 	var lastErr error
 

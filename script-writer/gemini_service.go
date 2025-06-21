@@ -11,7 +11,7 @@ import (
 
 const (
 	baseURL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
-	timeout = 60 * time.Second
+	timeout = 300 * time.Second
 )
 
 // GeminiService handles all Gemini API interactions
