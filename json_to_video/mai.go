@@ -249,7 +249,7 @@ func validateVideoRequest(req *VideoRequest) error {
 	if req.Title == "" {
 		return fmt.Errorf("title is required")
 	}
-	if req.Duration <= 0 {
+	if req.Duration <= 0.0 { // Change to float comparison
 		return fmt.Errorf("duration must be positive")
 	}
 	if req.Width <= 0 || req.Height <= 0 {
@@ -299,97 +299,6 @@ func saveBase64Asset(base64Data, filepath string) error {
 	// This is a simplified version - you'd want to properly decode base64
 	// and handle different formats in a real implementation
 	return os.WriteFile(filepath, []byte(base64Data), 0644)
-}
-
-func buildFilterComplexWithCounts1(req *VideoRequest, videoInputCount int, audioInputs []string) string {
-	var filters []string
-
-	// Start with background
-	currentVideo := "[0:v]"
-
-	// Process images with proper scaling and timing
-	videoInputIndex := 1 // Start from 1 (0 is background)
-
-	for _, img := range req.Images {
-		if (img.Data != "" || img.URL != "") && img.Duration > 0 && videoInputIndex < videoInputCount {
-
-			// Check if this should be fullscreen (image dimensions match video dimensions)
-			isFullscreen := (img.Width == req.Width && img.Height == req.Height)
-
-			var scaleFilter string
-			if isFullscreen || (img.X == 0 && img.Y == 0 && img.Width >= req.Width && img.Height >= req.Height) {
-				// For fullscreen images, scale to fill entire screen (may crop)
-				scaleFilter = fmt.Sprintf("[%d:v]scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d[scaled%d]",
-					videoInputIndex, req.Width, req.Height, req.Width, req.Height, videoInputIndex)
-
-				// For fullscreen, overlay at 0,0
-				overlayFilter := fmt.Sprintf("%s[scaled%d]overlay=0:0:enable='between(t,%d,%d)'[v%d]",
-					currentVideo, videoInputIndex, img.StartTime, img.StartTime+img.Duration, videoInputIndex)
-				filters = append(filters, scaleFilter)
-				filters = append(filters, overlayFilter)
-			} else {
-				// For non-fullscreen images, scale to specified dimensions
-				scaleFilter = fmt.Sprintf("[%d:v]scale=%d:%d[scaled%d]",
-					videoInputIndex, img.Width, img.Height, videoInputIndex)
-
-				// Create overlay with specified positioning
-				overlayFilter := fmt.Sprintf("%s[scaled%d]overlay=%d:%d:enable='between(t,%d,%d)'[v%d]",
-					currentVideo, videoInputIndex, img.X, img.Y, img.StartTime, img.StartTime+img.Duration, videoInputIndex)
-				filters = append(filters, scaleFilter)
-				filters = append(filters, overlayFilter)
-			}
-
-			currentVideo = fmt.Sprintf("[v%d]", videoInputIndex)
-			videoInputIndex++
-		}
-	}
-
-	// Process text overlays for scenes
-	sceneIndex := 0
-	for _, scene := range req.Scenes {
-		if scene.Text == "" {
-			continue
-		}
-
-		fontSize := scene.FontSize
-		if fontSize <= 0 {
-			fontSize = 24
-		}
-
-		fontColor := scene.FontColor
-		if fontColor == "" {
-			fontColor = "white"
-		}
-
-		x, y := getTextPosition(scene.Position, req.Width, req.Height, scene.X, scene.Y)
-
-		textFilter := fmt.Sprintf("%sdrawtext=text='%s':fontsize=%d:fontcolor=%s:x=%s:y=%s:enable='between(t,%d,%d)'[vt%d]",
-			currentVideo,
-			strings.ReplaceAll(scene.Text, "'", "\\'"),
-			fontSize, fontColor, x, y,
-			scene.StartTime, scene.StartTime+scene.Duration, sceneIndex)
-
-		filters = append(filters, textFilter)
-		currentVideo = fmt.Sprintf("[vt%d]", sceneIndex)
-		sceneIndex++
-	}
-
-	// Handle audio mixing
-	if len(audioInputs) > 0 {
-		if len(audioInputs) == 1 {
-			// Single audio input
-			audioFilter := fmt.Sprintf("%samix=inputs=1[a]", audioInputs[0])
-			filters = append(filters, audioFilter)
-		} else {
-			// Multiple audio inputs - mix them
-			audioFilter := fmt.Sprintf("%samix=inputs=%d[a]", strings.Join(audioInputs, ""), len(audioInputs))
-			filters = append(filters, audioFilter)
-		}
-	}
-
-	// The video output will be handled by addSubtitlesToFilterComplex if subtitles are present
-	// Otherwise, we need to set the final video output here
-	return strings.Join(filters, ";")
 }
 
 func executeFFmpegCommand(args []string, outputPath string) error {

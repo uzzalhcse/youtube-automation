@@ -18,10 +18,9 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// Enhanced VideoRequest with validation and better structure
 type VideoRequest struct {
 	Title      string         `json:"title" validate:"required,min=1,max=200"`
-	Duration   int            `json:"duration" validate:"required,min=1,max=3600"`
+	Duration   float64        `json:"duration" validate:"required,min=1,max=3600"` // Changed from int
 	Width      int            `json:"width" validate:"required,min=480,max=4096"`
 	Height     int            `json:"height" validate:"required,min=360,max=4096"`
 	Background string         `json:"background" validate:"required"`
@@ -29,6 +28,34 @@ type VideoRequest struct {
 	Audio      AudioConfig    `json:"audio"`
 	Subtitles  SubtitleConfig `json:"subtitles"`
 	Scenes     []Scene        `json:"scenes"`
+}
+
+type ImageAsset struct {
+	ID        string         `json:"id"`
+	Data      string         `json:"data,omitempty"`
+	URL       string         `json:"url,omitempty"`
+	StartTime float64        `json:"starttime"` // Changed from int
+	Duration  float64        `json:"duration"`  // Changed from int
+	X         int            `json:"x"`
+	Y         int            `json:"y"`
+	Width     int            `json:"width"`
+	Height    int            `json:"height"`
+	ZIndex    int            `json:"zindex"`
+	Opacity   float64        `json:"opacity"`
+	Effect    string         `json:"effect,omitempty"`
+	KenBurns  KenBurnsConfig `json:"kenburns,omitempty"`
+}
+
+type Scene struct {
+	ID        string  `json:"id"`
+	Text      string  `json:"text"`
+	StartTime float64 `json:"starttime"` // Changed from int
+	Duration  float64 `json:"duration"`  // Changed from int
+	X         int     `json:"x"`
+	Y         int     `json:"y"`
+	FontSize  int     `json:"fontsize"`
+	FontColor string  `json:"fontcolor"`
+	Position  string  `json:"position"`
 }
 
 // VideoResponse represents the API response
@@ -87,7 +114,7 @@ func (yt *YtAutomation) getChunkVisuals(scriptID primitive.ObjectID) ([]ChunkVis
 // Build video request from script and chunk visuals
 func (yt *YtAutomation) buildVideoRequest(script *Script, chunkVisuals []ChunkVisual) (*VideoRequest, error) {
 	// Calculate total duration from SRT if available
-	duration := 30 // default duration
+	var duration float64 = 30.0 // default duration
 	if script.SRT != "" {
 		calculatedDuration, err := yt.calculateDurationFromSRT(script.SRT)
 		if err == nil && calculatedDuration > 0 {
@@ -105,7 +132,7 @@ func (yt *YtAutomation) buildVideoRequest(script *Script, chunkVisuals []ChunkVi
 		Audio: AudioConfig{
 			VoiceOverURL: script.FullAudioFile,
 			VoiceVolume:  1.0,
-			Volume:       0.3, // Background music volume
+			Volume:       0.3,
 		},
 		Subtitles: SubtitleConfig{
 			SRTData:    script.SRT,
@@ -118,32 +145,37 @@ func (yt *YtAutomation) buildVideoRequest(script *Script, chunkVisuals []ChunkVi
 		Scenes: make([]Scene, 0),
 	}
 
-	// Process chunk visuals to create image assets
-	currentTime := 0
+	// Process chunk visuals with precise float timing
 	for i, chunk := range chunkVisuals {
 		if chunk.ImagePath == "" {
 			continue
 		}
 
-		// Calculate duration for this chunk (you may want to parse from SRT)
-		chunkDuration := 10 // default 10 seconds per chunk
-		if i < len(chunkVisuals)-1 {
-			// You can implement better duration calculation here
-			chunkDuration = yt.calculateChunkDuration(chunk, script.SRT)
-		} else {
-			// Last chunk takes remaining time
-			chunkDuration = duration - currentTime
+		// Parse actual start and end times as float64
+		startTime, err := strconv.ParseFloat(chunk.StartTime, 64)
+		if err != nil {
+			fmt.Printf("Warning: Could not parse start_time '%s' for chunk %d: %v\n", chunk.StartTime, i, err)
+			continue
 		}
 
-		if chunkDuration <= 0 {
-			chunkDuration = 5 // minimum duration
+		endTime, err := strconv.ParseFloat(chunk.EndTime, 64)
+		if err != nil {
+			fmt.Printf("Warning: Could not parse end_time '%s' for chunk %d: %v\n", chunk.EndTime, i, err)
+			continue
+		}
+
+		// Calculate precise duration
+		actualDuration := endTime - startTime
+		if actualDuration <= 0 {
+			fmt.Printf("Warning: Invalid duration for chunk %d (start: %f, end: %f)\n", i, startTime, endTime)
+			actualDuration = 1.0 // minimum 1 second
 		}
 
 		imageAsset := ImageAsset{
 			ID:        fmt.Sprintf("chunk_%d_%s", i, chunk.ID.Hex()),
 			URL:       chunk.ImagePath,
-			StartTime: currentTime,
-			Duration:  chunkDuration,
+			StartTime: startTime,      // Keep full precision
+			Duration:  actualDuration, // Keep full precision
 			X:         0,
 			Y:         0,
 			Width:     1920,
@@ -164,7 +196,6 @@ func (yt *YtAutomation) buildVideoRequest(script *Script, chunkVisuals []ChunkVi
 		}
 
 		videoRequest.Images = append(videoRequest.Images, imageAsset)
-		currentTime += chunkDuration
 	}
 
 	return videoRequest, nil
@@ -408,7 +439,7 @@ func (yt *YtAutomation) validateVideoRequest(req *VideoRequest) error {
 	if req.Title == "" {
 		return fmt.Errorf("title is required")
 	}
-	if req.Duration <= 0 {
+	if req.Duration <= 0.0 { // Change to float comparison
 		return fmt.Errorf("duration must be positive")
 	}
 	if req.Width <= 0 || req.Height <= 0 {
@@ -420,8 +451,7 @@ func (yt *YtAutomation) validateVideoRequest(req *VideoRequest) error {
 	return nil
 }
 
-func (yt *YtAutomation) calculateDurationFromSRT(srtContent string) (int, error) {
-	// Simple SRT parsing to get the last timestamp
+func (yt *YtAutomation) calculateDurationFromSRT(srtContent string) (float64, error) {
 	lines := strings.Split(srtContent, "\n")
 	var lastEndTime string
 
@@ -438,38 +468,34 @@ func (yt *YtAutomation) calculateDurationFromSRT(srtContent string) (int, error)
 		return 0, fmt.Errorf("no timestamps found in SRT")
 	}
 
-	// Convert timestamp to seconds (format: HH:MM:SS,mmm)
-	return yt.parseTimestamp(lastEndTime)
+	return yt.parseTimestampFloat(lastEndTime)
 }
-
-func (yt *YtAutomation) parseTimestamp(timestamp string) (int, error) {
-	// Remove milliseconds
-	if strings.Contains(timestamp, ",") {
-		timestamp = strings.Split(timestamp, ",")[0]
-	}
+func (yt *YtAutomation) parseTimestampFloat(timestamp string) (float64, error) {
+	// Handle both comma and dot as decimal separators
+	timestamp = strings.ReplaceAll(timestamp, ",", ".")
 
 	parts := strings.Split(timestamp, ":")
 	if len(parts) != 3 {
 		return 0, fmt.Errorf("invalid timestamp format")
 	}
 
-	hours, _ := strconv.Atoi(parts[0])
-	minutes, _ := strconv.Atoi(parts[1])
-	seconds, _ := strconv.Atoi(parts[2])
-
-	return hours*3600 + minutes*60 + seconds, nil
-}
-
-func (yt *YtAutomation) calculateChunkDuration(chunk ChunkVisual, srtContent string) int {
-	// Parse start and end times from chunk or SRT
-	if chunk.StartTime != "" && chunk.EndTime != "" {
-		startSeconds, err1 := yt.parseTimestamp(chunk.StartTime)
-		endSeconds, err2 := yt.parseTimestamp(chunk.EndTime)
-		if err1 == nil && err2 == nil {
-			return endSeconds - startSeconds
-		}
+	hours, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, err
 	}
-	return 10 // default duration
+
+	minutes, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, err
+	}
+
+	// Parse seconds with decimal precision
+	seconds, err := strconv.ParseFloat(parts[2], 64)
+	if err != nil {
+		return 0, err
+	}
+
+	return float64(hours)*3600 + float64(minutes)*60 + seconds, nil
 }
 
 func getEnvWithDefault(key, defaultValue string) string {

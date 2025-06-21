@@ -7,16 +7,11 @@ import (
 	"strings"
 )
 
-// Replace the buildFilterComplexWithCounts function
 func buildFilterComplexWithCounts(req *VideoRequest, videoInputCount int, audioInputs []string) string {
 	var filters []string
-
-	// Start with background
 	currentVideo := "[0:v]"
 	hasProcessedVideo := false
-
-	// Process images with Ken Burns effect
-	videoInputIndex := 1 // Start from 1 (0 is background)
+	videoInputIndex := 1
 
 	for _, img := range req.Images {
 		if (img.Data != "" || img.URL != "") && img.Duration > 0 && videoInputIndex < videoInputCount {
@@ -25,60 +20,35 @@ func buildFilterComplexWithCounts(req *VideoRequest, videoInputCount int, audioI
 			var scaleFilter string
 			var overlayFilter string
 
-			// Check if Ken Burns effect is enabled
 			if img.KenBurns.Enabled {
-				// Apply Ken Burns effect (zoom/pan)
-				scaleWidth := img.KenBurns.ScaleWidth
-				if scaleWidth <= 0 {
-					scaleWidth = 8000 // Default scale width
-				}
+				// Calculate duration in frames with float precision (25fps)
+				durationFrames := int(img.Duration * 25)
 
-				zoomRate := img.KenBurns.ZoomRate
-				if zoomRate <= 0 {
-					zoomRate = 0.0005 // Default zoom rate
-				}
-
-				panX := img.KenBurns.PanX
-				if panX == "" {
-					panX = "iw/2-(iw/zoom/2)" // Default center pan
-				}
-
-				panY := img.KenBurns.PanY
-				if panY == "" {
-					panY = "ih/2-(ih/zoom/2)" // Default center pan
-				}
-
-				// Calculate duration in frames (assuming 25fps)
-				durationFrames := img.Duration * 25
-
-				// Create Ken Burns filter
 				kenBurnsFilter := fmt.Sprintf("[%d:v]scale=%d:-1,zoompan=z='zoom+%f':x=%s:y=%s:d=%d:s=%dx%d:fps=25[kb%d]",
-					videoInputIndex, scaleWidth, zoomRate, panX, panY, durationFrames, req.Width, req.Height, videoInputIndex)
+					videoInputIndex, img.KenBurns.ScaleWidth, img.KenBurns.ZoomRate,
+					img.KenBurns.PanX, img.KenBurns.PanY, durationFrames, req.Width, req.Height, videoInputIndex)
 
-				// Overlay with timing
-				overlayFilter = fmt.Sprintf("%s[kb%d]overlay=0:0:enable='between(t,%d,%d)'[v%d]",
+				// Use float precision in timing
+				overlayFilter = fmt.Sprintf("%s[kb%d]overlay=0:0:enable='between(t,%.3f,%.3f)'[v%d]",
 					currentVideo, videoInputIndex, img.StartTime, img.StartTime+img.Duration, videoInputIndex)
 
 				filters = append(filters, kenBurnsFilter)
 				filters = append(filters, overlayFilter)
-
 			} else {
-				// Regular image processing (existing logic)
+				// Regular image processing with float timing
 				isFullscreen := (img.Width == req.Width && img.Height == req.Height)
 
 				if isFullscreen || (img.X == 0 && img.Y == 0 && img.Width >= req.Width && img.Height >= req.Height) {
-					// For fullscreen images, scale to fill entire screen
 					scaleFilter = fmt.Sprintf("[%d:v]scale=%d:%d:force_original_aspect_ratio=increase,crop=%d:%d[scaled%d]",
 						videoInputIndex, req.Width, req.Height, req.Width, req.Height, videoInputIndex)
 
-					overlayFilter = fmt.Sprintf("%s[scaled%d]overlay=0:0:enable='between(t,%d,%d)'[v%d]",
+					overlayFilter = fmt.Sprintf("%s[scaled%d]overlay=0:0:enable='between(t,%.3f,%.3f)'[v%d]",
 						currentVideo, videoInputIndex, img.StartTime, img.StartTime+img.Duration, videoInputIndex)
 				} else {
-					// For non-fullscreen images, scale to specified dimensions
 					scaleFilter = fmt.Sprintf("[%d:v]scale=%d:%d[scaled%d]",
 						videoInputIndex, img.Width, img.Height, videoInputIndex)
 
-					overlayFilter = fmt.Sprintf("%s[scaled%d]overlay=%d:%d:enable='between(t,%d,%d)'[v%d]",
+					overlayFilter = fmt.Sprintf("%s[scaled%d]overlay=%d:%d:enable='between(t,%.3f,%.3f)'[v%d]",
 						currentVideo, videoInputIndex, img.X, img.Y, img.StartTime, img.StartTime+img.Duration, videoInputIndex)
 				}
 
@@ -90,8 +60,7 @@ func buildFilterComplexWithCounts(req *VideoRequest, videoInputCount int, audioI
 			videoInputIndex++
 		}
 	}
-
-	// Process text overlays for scenes
+	// Process text overlays with float timing
 	sceneIndex := 0
 	hasProcessedText := false
 	for _, scene := range req.Scenes {
@@ -112,7 +81,8 @@ func buildFilterComplexWithCounts(req *VideoRequest, videoInputCount int, audioI
 
 		x, y := getTextPosition(scene.Position, req.Width, req.Height, scene.X, scene.Y)
 
-		textFilter := fmt.Sprintf("%sdrawtext=text='%s':fontsize=%d:fontcolor=%s:x=%s:y=%s:enable='between(t,%d,%d)'[vt%d]",
+		// Use float precision for scene timing
+		textFilter := fmt.Sprintf("%sdrawtext=text='%s':fontsize=%d:fontcolor=%s:x=%s:y=%s:enable='between(t,%.3f,%.3f)'[vt%d]",
 			currentVideo,
 			strings.ReplaceAll(scene.Text, "'", "\\'"),
 			fontSize, fontColor, x, y,
@@ -214,33 +184,33 @@ func buildFFmpegCommand(jobID string, req *VideoRequest) ([]string, error) {
 	// Detect GPU first
 	hasGPU, encoderArgs := detectGPUAcceleration()
 
-	// Add hardware acceleration at the beginning if available
+	// Add hardware acceleration
 	if hasGPU && len(encoderArgs) >= 2 && encoderArgs[0] == "-hwaccel" {
 		args = append(args, "-hwaccel", encoderArgs[1])
 		if encoderArgs[1] == "qsv" {
 			args = append(args, "-hwaccel_output_format", "qsv")
 		}
-		fmt.Println("Using GPU acceleration with args:", encoderArgs)
 	}
 
-	// Background color/image
+	// Background with float duration
 	if req.Background != "" && req.Background[0] == '#' {
 		args = append(args, "-f", "lavfi", "-i",
-			fmt.Sprintf("color=%s:size=%dx%d:duration=%d:rate=25",
-				req.Background, req.Width, req.Height, req.Duration))
+			fmt.Sprintf("color=%s:size=%dx%d:duration=%.3f:rate=25",
+				req.Background, req.Width, req.Height, req.Duration)) // Use %.3f for float
 		videoInputCount++
 	}
 
-	// Add image inputs - track only actual image files
+	// Add image inputs with float duration
 	imageCount := 0
 	for i, img := range req.Images {
 		if img.Data != "" {
-			args = append(args, "-loop", "1", "-t", strconv.Itoa(img.Duration),
+			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", img.Duration), // Use %.3f for float
 				"-i", filepath.Join(tempDir, fmt.Sprintf("image_%d.png", i)))
 			videoInputCount++
 			imageCount++
 		} else if img.URL != "" {
-			args = append(args, "-loop", "1", "-t", strconv.Itoa(img.Duration), "-i", img.URL)
+			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", img.Duration), // Use %.3f for float
+				"-i", img.URL)
 			videoInputCount++
 			imageCount++
 		}
@@ -313,7 +283,7 @@ func buildFFmpegCommand(jobID string, req *VideoRequest) ([]string, error) {
 	if len(audioInputs) > 0 {
 		args = append(args, "-c:a", "aac", "-b:a", "128k")
 	}
-	args = append(args, "-t", strconv.Itoa(req.Duration), "-y")
+	args = append(args, "-t", fmt.Sprintf("%.3f", req.Duration), "-y") // Use %.3f for float
 
 	return args, nil
 }

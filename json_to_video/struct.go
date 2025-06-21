@@ -2,37 +2,45 @@ package main
 
 import "time"
 
-// VideoRequest represents the JSON structure for video generation
 type VideoRequest struct {
-	Title      string         `json:"title"`
-	Duration   int            `json:"duration"` // in seconds
-	Width      int            `json:"width"`
-	Height     int            `json:"height"`
-	Background string         `json:"background"` // color or base64 image
-	Images     []ImageAsset   `json:"images"`
+	Title      string         `json:"title" validate:"required,min=1,max=200"`
+	Duration   float64        `json:"duration" validate:"required,min=1,max=3600"` // Changed from int
+	Width      int            `json:"width" validate:"required,min=480,max=4096"`
+	Height     int            `json:"height" validate:"required,min=360,max=4096"`
+	Background string         `json:"background" validate:"required"`
+	Images     []ImageAsset   `json:"images" validate:"required,min=1"`
 	Audio      AudioConfig    `json:"audio"`
 	Subtitles  SubtitleConfig `json:"subtitles"`
 	Scenes     []Scene        `json:"scenes"`
 }
 
 type ImageAsset struct {
-	ID        string  `json:"id"`
-	Data      string  `json:"data"`       // base64 encoded image
-	URL       string  `json:"url"`        // or image URL
-	StartTime int     `json:"start_time"` // when to show (seconds)
-	Duration  int     `json:"duration"`   // how long to show (seconds)
-	X         int     `json:"x"`          // position x
-	Y         int     `json:"y"`          // position y
-	Width     int     `json:"width"`      // scaled width
-	Height    int     `json:"height"`     // scaled height
-	ZIndex    int     `json:"z_index"`    // layer order
-	Opacity   float64 `json:"opacity"`    // 0.0 to 1.0
-	Effect    string  `json:"effect"`     // "fade", "slide", "zoom", "none"
-
-	// Ken Burns effect parameters
-	KenBurns KenBurnsConfig `json:"ken_burns"`
+	ID        string         `json:"id"`
+	Data      string         `json:"data,omitempty"`
+	URL       string         `json:"url,omitempty"`
+	StartTime float64        `json:"starttime"` // Changed from int
+	Duration  float64        `json:"duration"`  // Changed from int
+	X         int            `json:"x"`
+	Y         int            `json:"y"`
+	Width     int            `json:"width"`
+	Height    int            `json:"height"`
+	ZIndex    int            `json:"zindex"`
+	Opacity   float64        `json:"opacity"`
+	Effect    string         `json:"effect,omitempty"`
+	KenBurns  KenBurnsConfig `json:"kenburns,omitempty"`
 }
 
+type Scene struct {
+	ID        string  `json:"id"`
+	Text      string  `json:"text"`
+	StartTime float64 `json:"starttime"` // Changed from int
+	Duration  float64 `json:"duration"`  // Changed from int
+	X         int     `json:"x"`
+	Y         int     `json:"y"`
+	FontSize  int     `json:"fontsize"`
+	FontColor string  `json:"fontcolor"`
+	Position  string  `json:"position"`
+}
 type AudioConfig struct {
 	BackgroundMusic string  `json:"background_music"` // base64 encoded audio
 	BackgroundURL   string  `json:"background_url"`   // or audio URL
@@ -52,21 +60,6 @@ type SubtitleConfig struct {
 	Position   string `json:"position"`   // "bottom", "top", "center"
 	Background string `json:"background"` // subtitle background color
 	Outline    bool   `json:"outline"`    // text outline
-}
-
-type Scene struct {
-	StartTime  int    `json:"start_time"` // in seconds
-	Duration   int    `json:"duration"`   // in seconds
-	Text       string `json:"text"`
-	FontSize   int    `json:"font_size"`
-	FontColor  string `json:"font_color"`
-	Position   string `json:"position"`   // "center", "top", "bottom"
-	X          int    `json:"x"`          // custom x position
-	Y          int    `json:"y"`          // custom y position
-	Effect     string `json:"effect"`     // "fade", "slide", "typewriter", "none"
-	Background string `json:"background"` // text background
-	Outline    bool   `json:"outline"`    // text outline
-	Animation  string `json:"animation"`  // "bounce", "shake", "pulse"
 }
 
 // VideoResponse represents the API response
