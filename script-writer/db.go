@@ -168,3 +168,24 @@ func (yt *YtAutomation) updateVisualChunkWithProcessingInfo(chunkID primitive.Ob
 		fmt.Printf("Warning: Failed to update chunk with processing info: %v\n", err)
 	}
 }
+func (yt *YtAutomation) checkExistingVisuals(scriptID primitive.ObjectID, chunk ScriptSrt, force bool) (bool, error) {
+	if force {
+		// If force is true, don't skip - we'll update existing entries
+		return false, nil
+	}
+
+	// Check if any visuals exist for this chunk
+	filter := bson.M{
+		"script_id":   scriptID,
+		"chunk_id":    chunk.ID,
+		"chunk_index": chunk.ChunkIndex,
+	}
+
+	count, err := chunkVisualsCollection.CountDocuments(context.Background(), filter)
+	if err != nil {
+		return false, fmt.Errorf("failed to check existing visuals: %w", err)
+	}
+
+	// If any visuals exist, skip this chunk
+	return count > 0, nil
+}

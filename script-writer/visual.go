@@ -11,16 +11,31 @@ import (
 	"time"
 )
 
-func (yt *YtAutomation) generateVisualPromptForChunks(scriptID primitive.ObjectID, chunks []ScriptSrt, styleID primitive.ObjectID) error {
+func (yt *YtAutomation) generateVisualPromptForChunks(scriptID primitive.ObjectID, chunks []ScriptSrt, styleID primitive.ObjectID, force bool) error {
 	fmt.Printf("🎨 Starting visual prompt generation for %d chunks...\n", len(chunks))
 	script, err := yt.getScriptByID(scriptID)
 	if err != nil {
 		return fmt.Errorf("loading script: %w", err)
 	}
+
 	for i, chunk := range chunks {
+		fmt.Printf("Processing chunk %d/%d...\n", i+1, len(chunks))
+
+		// Check if visuals already exist for this chunk
+		shouldSkip, err := yt.checkExistingVisuals(scriptID, chunk, force)
+		if err != nil {
+			fmt.Printf("Warning: Failed to check existing visuals for chunk %d: %v\n", chunk.ChunkIndex, err)
+			continue
+		}
+
+		if shouldSkip {
+			fmt.Printf("Skipping chunk %d - visuals already exist\n", chunk.ChunkIndex)
+			continue
+		}
+
 		fmt.Printf("Generating visual prompt for chunk %d/%d...\n", i+1, len(chunks))
 
-		// Generate visual prompt using Gemini
+		// Generate visual prompt using Gemini (expensive API call)
 		visualPrompts, err := yt.generateVisualPrompts(chunk.Content, script, styleID)
 		if err != nil {
 			fmt.Printf("Warning: Failed to generate prompt visual for chunk %d: %v\n", chunk.ChunkIndex, err)
@@ -28,7 +43,7 @@ func (yt *YtAutomation) generateVisualPromptForChunks(scriptID primitive.ObjectI
 		}
 
 		// Save visual prompts to database
-		if err := yt.saveChunkVisuals(scriptID, chunk, visualPrompts); err != nil {
+		if err := yt.saveChunkVisuals(scriptID, chunk, visualPrompts, force); err != nil {
 			fmt.Printf("Warning: Failed to save visuals prompt for chunk %d: %v\n", chunk.ChunkIndex, err)
 			continue
 		}
@@ -43,7 +58,6 @@ func (yt *YtAutomation) generateVisualPromptForChunks(scriptID primitive.ObjectI
 	fmt.Printf("✓ Completed visual prompt generation for all chunks\n")
 	return nil
 }
-
 func (yt *YtAutomation) generateVisualImagePromptForChunks(scriptID primitive.ObjectID, chunks []ChunkVisual) error {
 	fmt.Printf("🎨 Starting visual generation for %d chunks...\n", len(chunks))
 	globalOptions := map[string]interface{}{
@@ -61,10 +75,24 @@ func (yt *YtAutomation) generateVisualImagePromptForChunks(scriptID primitive.Ob
 	fmt.Printf("✓ Completed visual generation for all chunks\n")
 	return nil
 }
-func (yt *YtAutomation) saveChunkVisuals(scriptID primitive.ObjectID, chunk ScriptSrt, visualPrompts []VisualPromptResponse) error {
+func (yt *YtAutomation) saveChunkVisuals(scriptID primitive.ObjectID, chunk ScriptSrt, visualPrompts []VisualPromptResponse, force bool) error {
 	// Check if collection is initialized
 	if chunkVisualsCollection == nil {
 		return fmt.Errorf("chunk visuals collection is not initialized")
+	}
+
+	if force {
+		// Delete existing visuals for this chunk before inserting new ones
+		filter := bson.M{
+			"script_id":   scriptID,
+			"chunk_id":    chunk.ID,
+			"chunk_index": chunk.ChunkIndex,
+		}
+
+		_, err := chunkVisualsCollection.DeleteMany(context.Background(), filter)
+		if err != nil {
+			return fmt.Errorf("failed to delete existing visuals: %w", err)
+		}
 	}
 
 	var visualDocs []interface{}
@@ -77,7 +105,9 @@ func (yt *YtAutomation) saveChunkVisuals(scriptID primitive.ObjectID, chunk Scri
 			StartTime:   prompt.StartTime,
 			EndTime:     prompt.EndTime,
 			Prompt:      prompt.Prompt,
+			Status:      "pending",
 			CreatedAt:   time.Now(),
+			UpdatedAt:   time.Now(),
 		}
 		visualDocs = append(visualDocs, visualDoc)
 	}
@@ -87,6 +117,7 @@ func (yt *YtAutomation) saveChunkVisuals(scriptID primitive.ObjectID, chunk Scri
 		if err != nil {
 			return fmt.Errorf("failed to save chunk visuals: %w", err)
 		}
+		fmt.Printf("Saved %d visual prompts for chunk %d\n", len(visualDocs), chunk.ChunkIndex)
 	}
 
 	return nil

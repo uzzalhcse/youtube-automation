@@ -142,7 +142,6 @@ func main() {
 	http.HandleFunc("/scripts/", yt.getScriptStatusHandler)
 	http.HandleFunc("/generate-audio/", yt.generateAudioHandler)                                     // step 2
 	http.HandleFunc("/generate-subtitle/", yt.generateSubtitleHandler)                               // step 3
-	http.HandleFunc("/generate-visual-prompt/", yt.generateVisualPromptHandler)                      // step 4
 	http.HandleFunc("/generate-visual-prompts-with-style", yt.generateVisualPromptsWithStyleHandler) // step 4
 	http.HandleFunc("/generate-visual-images/", yt.generateVisualImagePromptHandler)                 // step 5
 	http.HandleFunc("/generate-video/", yt.generateVideoHandler)                                     // step 6
@@ -240,6 +239,7 @@ func createIndexes() error {
 	if err != nil {
 		return err
 	}
+
 	// Index for script_audios
 	_, err = scriptAudiosCollection.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{
@@ -253,6 +253,7 @@ func createIndexes() error {
 	if err != nil {
 		return err
 	}
+
 	// Index for script_srt
 	_, err = scriptSrtCollection.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{
@@ -261,6 +262,26 @@ func createIndexes() error {
 		},
 		{
 			Keys: bson.D{{"script_id", 1}},
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	// Index for chunk_visuals
+	_, err = chunkVisualsCollection.Indexes().CreateMany(ctx, []mongo.IndexModel{
+		{
+			Keys:    bson.D{{"script_id", 1}, {"chunk_id", 1}, {"chunk_index", 1}, {"prompt_index", 1}},
+			Options: options.Index().SetUnique(true),
+		},
+		{
+			Keys: bson.D{{"script_id", 1}},
+		},
+		{
+			Keys: bson.D{{"chunk_id", 1}},
+		},
+		{
+			Keys: bson.D{{"status", 1}, {"created_at", -1}},
 		},
 	})
 	if err != nil {
@@ -816,82 +837,6 @@ func (yt *YtAutomation) generateSubtitleHandler(w http.ResponseWriter, r *http.R
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"message": "Subtitle generation completed",
-		"data":    data,
-	})
-}
-func (yt *YtAutomation) generateVisualPromptHandler(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-
-	// Extract script ID from URL path (/generate-visual/{scriptID})
-	path := strings.TrimPrefix(r.URL.Path, "/generate-visual-prompt/")
-	if path == "" {
-		respondWithError(w, http.StatusBadRequest, "Script ID is required")
-		return
-	}
-
-	// Convert to ObjectID
-	objectID, err := primitive.ObjectIDFromHex(path)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Invalid script ID format")
-		return
-	}
-	var script Script
-	err = scriptsCollection.FindOne(context.Background(), bson.M{"_id": objectID}).Decode(&script)
-	if err != nil {
-		if err == mongo.ErrNoDocuments {
-			respondWithError(w, http.StatusNotFound, "Script not found")
-			return
-		}
-		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Database error: %v", err))
-		return
-	}
-
-	// Check if chunks already exist for this script
-	existingCount, err := scriptAudiosCollection.CountDocuments(
-		context.Background(),
-		bson.M{"script_id": objectID},
-	)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error checking existing chunks: %v", err))
-		return
-	}
-
-	var scriptSrtChunks []ScriptSrt
-
-	if existingCount > 0 {
-
-		findOptions := options.Find().SetSort(bson.M{"chunk_index": 1})
-		cursor, err := scriptSrtCollection.Find(
-			context.Background(),
-			bson.M{"script_id": objectID},
-			findOptions,
-		)
-		if err != nil {
-			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error fetching existing chunks: %v", err))
-			return
-		}
-		defer cursor.Close(context.Background())
-
-		if err = cursor.All(context.Background(), &scriptSrtChunks); err != nil {
-			respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Error decoding existing chunks: %v", err))
-			return
-		}
-	}
-	go func() {
-		if err := yt.generateVisualPromptForChunks(objectID, scriptSrtChunks, primitive.NilObjectID); err != nil {
-			fmt.Printf("Warning: Failed to generate visuals for chunks: %v\n", err)
-		}
-	}()
-
-	// TODO: Implement visual generation logic, Generate visual from raw script or srt. yt.generateVisualPromptForChunks()
-	// Return response with chunks
-	data := map[string]interface{}{
-		"script_id": path,
-	}
-
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"message": "Visual Prompt generation InProgress",
 		"data":    data,
 	})
 }

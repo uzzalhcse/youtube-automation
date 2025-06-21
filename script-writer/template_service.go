@@ -253,6 +253,7 @@ func (yt *YtAutomation) generateVisualPromptsWithStyleHandler(w http.ResponseWri
 	var req struct {
 		ScriptID string `json:"script_id"`
 		StyleID  string `json:"style_id"`
+		Force    bool   `json:"force,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -314,7 +315,7 @@ func (yt *YtAutomation) generateVisualPromptsWithStyleHandler(w http.ResponseWri
 		}
 	}
 	go func() {
-		if err := yt.generateVisualPromptForChunks(scriptID, scriptSrtChunks, styleID); err != nil {
+		if err := yt.generateVisualPromptForChunks(scriptID, scriptSrtChunks, styleID, req.Force); err != nil {
 			fmt.Printf("Warning: Failed to generate visuals for chunks: %v\n", err)
 		}
 	}()
