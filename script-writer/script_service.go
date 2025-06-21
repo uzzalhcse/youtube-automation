@@ -9,7 +9,6 @@ import (
 	"time"
 )
 
-// Replace entire GenerateCompleteScript method
 func (yt *YtAutomation) GenerateCompleteScript(scriptID primitive.ObjectID) error {
 	// Load script from DB
 	script, err := yt.getScriptByID(scriptID)

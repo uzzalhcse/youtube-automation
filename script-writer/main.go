@@ -793,7 +793,7 @@ func (yt *YtAutomation) generateSubtitleHandler(w http.ResponseWriter, r *http.R
 	}
 
 	// Split the script into chunks
-	chunks, err := splitSRTByDuration(srt, 30*time.Second)
+	chunks, err := splitSRTByDuration(srt, 45*time.Second)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to split SRT into chunks: %v", err))
 		return

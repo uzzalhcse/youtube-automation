@@ -65,8 +65,8 @@ func NewOpenRouterService(apiKey string) *OpenRouterService {
 		apiKey: apiKey,
 		client: &http.Client{Timeout: 300 * time.Second}, // 5 minutes for R1 models
 		//model:  "meta-llama/llama-3.1-70b-instruct",
-		//model: "deepseek/deepseek-chat-v3-0324:free",
-		model: "deepseek/deepseek-r1-distill-llama-70b", // Free DeepSeek R1 model
+		model: "deepseek/deepseek-chat-v3-0324:free",
+		//model: "deepseek/deepseek-r1-distill-llama-70b", // Free DeepSeek R1 model
 		//model: "qwen/qwen3-30b-a3b-04-28:free",
 	}
 }

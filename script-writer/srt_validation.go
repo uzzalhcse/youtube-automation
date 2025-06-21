@@ -299,3 +299,85 @@ func (yt *YtAutomation) checkMissingSRTRangesHandler(w http.ResponseWriter, r *h
 		"data":    report,
 	})
 }
+func detectGapsInSequence(srtRanges []SRTTimeRange, visualPrompts []VisualPromptResponse) ([]GapRecoveryRequest, error) {
+	var gaps []GapRecoveryRequest
+
+	// Sort visual prompts by start time
+	sort.Slice(visualPrompts, func(i, j int) bool {
+		startI, _ := parseTimeToFloat(visualPrompts[i].StartTime)
+		startJ, _ := parseTimeToFloat(visualPrompts[j].StartTime)
+		return startI < startJ
+	})
+
+	// Check for gaps between consecutive visual prompts
+	for i := 1; i < len(visualPrompts); i++ {
+		prevEnd, _ := parseTimeToFloat(visualPrompts[i-1].EndTime)
+		currStart, _ := parseTimeToFloat(visualPrompts[i].StartTime)
+
+		if currStart > prevEnd+0.5 { // Gap threshold: 0.5 seconds
+			// Find SRT content for this gap
+			gapSRTContent := extractSRTContentForTimeRange(srtRanges, prevEnd, currStart)
+
+			if gapSRTContent != "" {
+				// Build context from surrounding prompts
+				context := fmt.Sprintf("Previous visual: %s\nNext visual: %s",
+					visualPrompts[i-1].Prompt, visualPrompts[i].Prompt)
+
+				gaps = append(gaps, GapRecoveryRequest{
+					StartTime:  prevEnd,
+					EndTime:    currStart,
+					SRTContent: gapSRTContent,
+					Context:    context,
+				})
+			}
+		}
+	}
+
+	// Check for gaps at the beginning and end
+	if len(visualPrompts) > 0 && len(srtRanges) > 0 {
+		firstPromptStart, _ := parseTimeToFloat(visualPrompts[0].StartTime)
+		if srtRanges[0].StartTime < firstPromptStart-0.5 {
+			gapSRTContent := extractSRTContentForTimeRange(srtRanges, srtRanges[0].StartTime, firstPromptStart)
+			if gapSRTContent != "" {
+				gaps = append([]GapRecoveryRequest{{
+					StartTime:  srtRanges[0].StartTime,
+					EndTime:    firstPromptStart,
+					SRTContent: gapSRTContent,
+					Context:    fmt.Sprintf("Opening section before: %s", visualPrompts[0].Prompt),
+				}}, gaps...)
+			}
+		}
+
+		lastPromptEnd, _ := parseTimeToFloat(visualPrompts[len(visualPrompts)-1].EndTime)
+		lastSRTEnd := srtRanges[len(srtRanges)-1].EndTime
+		if lastSRTEnd > lastPromptEnd+0.5 {
+			gapSRTContent := extractSRTContentForTimeRange(srtRanges, lastPromptEnd, lastSRTEnd)
+			if gapSRTContent != "" {
+				gaps = append(gaps, GapRecoveryRequest{
+					StartTime:  lastPromptEnd,
+					EndTime:    lastSRTEnd,
+					SRTContent: gapSRTContent,
+					Context:    fmt.Sprintf("Closing section after: %s", visualPrompts[len(visualPrompts)-1].Prompt),
+				})
+			}
+		}
+	}
+
+	return gaps, nil
+}
+
+// extractSRTContentForTimeRange extracts SRT content within a specific time range
+func extractSRTContentForTimeRange(srtRanges []SRTTimeRange, startTime, endTime float64) string {
+	var relevantContent []string
+
+	for _, srtRange := range srtRanges {
+		// Check if SRT range overlaps with the gap
+		if srtRange.StartTime < endTime && srtRange.EndTime > startTime {
+			// This would need the actual SRT content parsing - you'd need to modify
+			// your SRT parsing to also extract the text content, not just time ranges
+			relevantContent = append(relevantContent, fmt.Sprintf("[%.2f-%.2f]", srtRange.StartTime, srtRange.EndTime))
+		}
+	}
+
+	return strings.Join(relevantContent, " ")
+}

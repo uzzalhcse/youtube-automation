@@ -112,6 +112,7 @@ type ChunkVisual struct {
 	ImagePath           string             `bson:"image_path,omitempty" json:"image_path,omitempty"` // Optional image path
 	Status              string             `bson:"status" json:"status"`                             // "pending", "processing", "completed", "failed"
 	RetryCount          int                `bson:"retry_count" json:"retry_count"`
+	IsRecovered         bool               `bson:"is_recovered,omitempty" json:"is_recovered,omitempty"`
 	Emotion             string             `bson:"emotion" json:"emotion"`
 	APIKeyID            primitive.ObjectID `bson:"api_key_id,omitempty" json:"api_key_id,omitempty"`
 	APIProvider         string             `bson:"api_provider,omitempty" json:"api_provider,omitempty"`
@@ -253,4 +254,10 @@ type APIKey struct {
 	LastUsed   time.Time          `bson:"last_used" json:"last_used"`
 	ErrorCount int                `bson:"error_count" json:"error_count"`
 	CreatedAt  time.Time          `bson:"created_at" json:"created_at"`
+}
+type GapRecoveryRequest struct {
+	StartTime  float64 `json:"start_time"`
+	EndTime    float64 `json:"end_time"`
+	SRTContent string  `json:"srt_content"`
+	Context    string  `json:"context"`
 }

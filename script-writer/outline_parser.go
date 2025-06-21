@@ -212,3 +212,56 @@ func (p *OutlineParser) cleanJSONResponse(response string) string {
 	cleanResponse = strings.TrimSuffix(cleanResponse, "```")
 	return strings.TrimSpace(cleanResponse)
 }
+func cleanJSONResponse(response string) string {
+	cleanResponse := strings.TrimSpace(response)
+
+	// Remove common prefixes that break JSON parsing
+	prefixes := []string{
+		"Here is the JSON output following all your specified requirements:",
+		"Here is the JSON output:",
+		"Here's the JSON response:",
+		"Here is the requested JSON:",
+		"The JSON output is:",
+		"JSON response:",
+		"Here is the JSON:",
+		"```json",
+		"```",
+	}
+
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(cleanResponse, prefix) {
+			cleanResponse = strings.TrimPrefix(cleanResponse, prefix)
+			cleanResponse = strings.TrimSpace(cleanResponse)
+		}
+	}
+
+	// Remove trailing markdown blocks
+	if strings.HasSuffix(cleanResponse, "```") {
+		cleanResponse = strings.TrimSuffix(cleanResponse, "```")
+		cleanResponse = strings.TrimSpace(cleanResponse)
+	}
+
+	// Find the first '[' and last ']' to extract just the JSON array
+	startIdx := strings.Index(cleanResponse, "[")
+	if startIdx == -1 {
+		return cleanResponse // No array found, return as is
+	}
+
+	endIdx := strings.LastIndex(cleanResponse, "]")
+	if endIdx == -1 || endIdx <= startIdx {
+		return cleanResponse // No valid closing bracket
+	}
+
+	// Extract just the JSON array portion
+	jsonOnly := cleanResponse[startIdx : endIdx+1]
+
+	return strings.TrimSpace(jsonOnly)
+}
+
+// Helper function to truncate strings for logging
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}

@@ -11,6 +11,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 )
@@ -209,34 +210,218 @@ func (yt *YtAutomation) generateVisualPromptsWithStyle(srtContent string, script
 		return nil, fmt.Errorf("failed to build visual prompt template: %w", err)
 	}
 
-	// Use the new method with separate prompts
-	response, err := yt.aiService.GenerateContentWithSystem(systemPrompt, userPrompt)
+	// Enhanced system prompt to ensure clean JSON response
+	enhancedSystemPrompt := systemPrompt + `
+
+CRITICAL JSON RESPONSE REQUIREMENTS:
+- Return ONLY a valid JSON array
+- NO explanatory text before or after JSON
+- NO markdown code blocks
+- NO "Here is..." or similar prefixes
+- Start response directly with [ and end with ]
+- Ensure all JSON is properly formatted and valid`
+
+	// Use the enhanced system prompt
+	response, err := yt.aiService.GenerateContentWithSystem(enhancedSystemPrompt, userPrompt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate visual prompts: %w", err)
 	}
 
-	// Rest of your existing code for cleaning and parsing JSON...
-	cleanResponse := strings.TrimSpace(response)
+	// Clean the response using the enhanced function
+	cleanResponse := cleanJSONResponse(response)
 
-	if strings.HasPrefix(cleanResponse, "```json") {
-		cleanResponse = strings.TrimPrefix(cleanResponse, "```json")
-	} else if strings.HasPrefix(cleanResponse, "```") {
-		cleanResponse = strings.TrimPrefix(cleanResponse, "```")
-	}
-	if strings.HasSuffix(cleanResponse, "```") {
-		cleanResponse = strings.TrimSuffix(cleanResponse, "```")
-	}
-	cleanResponse = strings.TrimSpace(cleanResponse)
+	// Log for debugging
+	log.Printf("Original response length: %d", len(response))
+	log.Printf("Cleaned response length: %d", len(cleanResponse))
+	log.Printf("First 100 chars of cleaned response: %s", truncateString(cleanResponse, 100))
 
+	// Additional JSON formatting fixes
 	cleanResponse = fixJSONFormatting(cleanResponse)
 
 	var visualPrompts []VisualPromptResponse
 	if err := json.Unmarshal([]byte(cleanResponse), &visualPrompts); err != nil {
-		log.Printf("JSON parsing error: %v\nResponse: %s", err, cleanResponse)
+		log.Printf("JSON parsing error: %v", err)
+		log.Printf("Problematic response (first 500 chars): %s", truncateString(cleanResponse, 500))
+
+		// Try one more cleaning attempt - look for JSON array in the middle of text
+		if jsonStart := strings.Index(cleanResponse, "[{"); jsonStart != -1 {
+			if jsonEnd := strings.LastIndex(cleanResponse, "}]"); jsonEnd != -1 && jsonEnd > jsonStart {
+				fallbackJSON := cleanResponse[jsonStart : jsonEnd+2]
+				log.Printf("Attempting fallback JSON extraction: %s", truncateString(fallbackJSON, 200))
+
+				if err := json.Unmarshal([]byte(fallbackJSON), &visualPrompts); err == nil {
+					log.Printf("Fallback JSON parsing successful!")
+					return visualPrompts, nil
+				}
+			}
+		}
+
 		return nil, fmt.Errorf("failed to parse visual prompts JSON: %w", err)
 	}
 
 	return visualPrompts, nil
+}
+
+// buildGapRecoveryPrompt creates a specialized prompt for filling gaps
+func (t *TemplateService) buildGapRecoveryPrompt(channelID primitive.ObjectID, styleID primitive.ObjectID, gapReq GapRecoveryRequest) (string, string, error) {
+	// Master Gap Recovery System Prompt with enhanced JSON requirements
+	systemPrompt := `You are a specialized Visual Continuity Recovery AI. Your CRITICAL mission is to fill missing visual prompt gaps to ensure seamless video flow.
+
+CONTEXT: The visual prompt sequence has gaps that break continuity. You must generate visual prompts SPECIFICALLY for the missing time ranges.
+
+STRICT REQUIREMENTS:
+1. Generate prompts ONLY for the exact time range specified
+2. Ensure smooth visual transition from previous to next existing prompts  
+3. Maintain narrative consistency and visual flow
+4. NO overlapping with existing prompts
+5. Cover the ENTIRE gap duration with logical scene progression
+
+CRITICAL JSON RESPONSE REQUIREMENTS:
+- Return ONLY a valid JSON array
+- NO explanatory text, comments, or markdown
+- NO "Here is..." or similar prefixes
+- Start response directly with [ and end with ]
+- Each object must have exactly: start_time, end_time, prompt
+- All values must be properly quoted strings
+- Ensure valid JSON syntax throughout`
+
+	// Get visual style if specified
+	var styleRulesText, promptTemplateText string
+	if styleID != primitive.NilObjectID {
+		var style VisualStyle
+		err := visualStylesCollection.FindOne(context.Background(), bson.M{"_id": styleID, "is_active": true}).Decode(&style)
+		if err == nil {
+			styleRulesText = "🎨 MANDATORY VISUAL STYLE:\n"
+			for _, rule := range style.StyleRules {
+				styleRulesText += "- " + rule + "\n"
+			}
+			promptTemplateText = "🖼️ REQUIRED PROMPT FORMAT:\n\"" + style.PromptTemplate + "\""
+		}
+	}
+
+	userPrompt := fmt.Sprintf(`🚨 CRITICAL GAP RECOVERY MISSION 🚨
+
+GAP TO FILL:
+- Start Time: %.2f seconds
+- End Time: %.2f seconds  
+- Duration: %.2f seconds
+
+MISSING SRT CONTENT:
+%s
+
+VISUAL CONTEXT FOR CONTINUITY:
+%s
+
+%s
+
+%s
+
+RESPONSE FORMAT - RETURN ONLY THIS JSON STRUCTURE:
+[
+  {
+    "start_time": "%.2f",
+    "end_time": "[calculated_end_time]",  
+    "prompt": "[visual_prompt_description]"
+  }
+]
+
+CRITICAL: Return ONLY the JSON array above. No explanations, no markdown, no additional text.`,
+		gapReq.StartTime, gapReq.EndTime, gapReq.EndTime-gapReq.StartTime,
+		gapReq.SRTContent,
+		gapReq.Context,
+		styleRulesText,
+		promptTemplateText,
+		gapReq.StartTime)
+
+	return systemPrompt, userPrompt, nil
+}
+func (yt *YtAutomation) generateGapRecoveryPrompts(gaps []GapRecoveryRequest, script *Script, styleID primitive.ObjectID) ([]VisualPromptResponse, error) {
+	var recoveryPrompts []VisualPromptResponse
+	templateService := NewTemplateService()
+
+	for _, gap := range gaps {
+		log.Printf("Generating recovery prompts for gap: %.2f-%.2f seconds", gap.StartTime, gap.EndTime)
+
+		systemPrompt, userPrompt, err := templateService.buildGapRecoveryPrompt(script.ChannelID, styleID, gap)
+		if err != nil {
+			log.Printf("Failed to build gap recovery prompt: %v", err)
+			continue
+		}
+
+		response, err := yt.aiService.GenerateContentWithSystem(systemPrompt, userPrompt)
+		if err != nil {
+			log.Printf("Failed to generate gap recovery prompts: %v", err)
+			continue
+		}
+
+		// Clean and parse JSON response
+		cleanResponse := strings.TrimSpace(response)
+		if strings.HasPrefix(cleanResponse, "```json") {
+			cleanResponse = strings.TrimPrefix(cleanResponse, "```json")
+		} else if strings.HasPrefix(cleanResponse, "```") {
+			cleanResponse = strings.TrimPrefix(cleanResponse, "```")
+		}
+		if strings.HasSuffix(cleanResponse, "```") {
+			cleanResponse = strings.TrimSuffix(cleanResponse, "```")
+		}
+		cleanResponse = strings.TrimSpace(cleanResponse)
+		cleanResponse = fixJSONFormatting(cleanResponse)
+
+		var gapPrompts []VisualPromptResponse
+		if err := json.Unmarshal([]byte(cleanResponse), &gapPrompts); err != nil {
+			log.Printf("Failed to parse gap recovery JSON: %v\nResponse: %s", err, cleanResponse)
+			continue
+		}
+
+		recoveryPrompts = append(recoveryPrompts, gapPrompts...)
+		log.Printf("Generated %d recovery prompts for gap", len(gapPrompts))
+	}
+
+	return recoveryPrompts, nil
+}
+
+// Enhanced validation function that also performs gap recovery
+func (yt *YtAutomation) validateAndRecoverVisualPrompts1(srtContent string, script *Script, styleID primitive.ObjectID, existingPrompts []VisualPromptResponse) ([]VisualPromptResponse, error) {
+	// Extract SRT time ranges
+	srtRanges, err := extractSRTTimeRanges(srtContent)
+	if err != nil {
+		return existingPrompts, fmt.Errorf("failed to extract SRT time ranges: %w", err)
+	}
+
+	// Detect gaps
+	gaps, err := detectGapsInSequence(srtRanges, existingPrompts)
+	if err != nil {
+		return existingPrompts, fmt.Errorf("failed to detect gaps: %w", err)
+	}
+
+	if len(gaps) == 0 {
+		log.Printf("No gaps detected in visual prompt sequence")
+		return existingPrompts, nil
+	}
+
+	log.Printf("Detected %d gaps, initiating recovery process", len(gaps))
+
+	// Generate recovery prompts
+	recoveryPrompts, err := yt.generateGapRecoveryPrompts(gaps, script, styleID)
+	if err != nil {
+		log.Printf("Gap recovery failed: %v", err)
+		return existingPrompts, nil // Return original prompts if recovery fails
+	}
+
+	// Merge existing and recovery prompts
+	allPrompts := append(existingPrompts, recoveryPrompts...)
+
+	// Sort by start time
+	sort.Slice(allPrompts, func(i, j int) bool {
+		startI, _ := parseTimeToFloat(allPrompts[i].StartTime)
+		startJ, _ := parseTimeToFloat(allPrompts[j].StartTime)
+		return startI < startJ
+	})
+
+	log.Printf("Gap recovery complete. Total prompts: %d (original: %d, recovered: %d)",
+		len(allPrompts), len(existingPrompts), len(recoveryPrompts))
+
+	return allPrompts, nil
 }
 
 func (yt *YtAutomation) generateVisualPromptsWithStyleHandler(w http.ResponseWriter, r *http.Request) {
@@ -315,7 +500,7 @@ func (yt *YtAutomation) generateVisualPromptsWithStyleHandler(w http.ResponseWri
 		}
 	}
 	go func() {
-		if err := yt.generateVisualPromptForChunks(scriptID, scriptSrtChunks, styleID, req.Force); err != nil {
+		if err := yt.generateVisualPromptForChunksWithRecovery(scriptID, scriptSrtChunks, styleID, req.Force); err != nil {
 			fmt.Printf("Warning: Failed to generate visuals for chunks: %v\n", err)
 		}
 	}()
