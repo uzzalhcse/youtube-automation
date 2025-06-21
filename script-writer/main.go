@@ -44,8 +44,8 @@ const (
 	StatusFailed     = "failed"
 )
 const (
-	defaultAIProvider = ProviderGemini // ProviderGemini or ProviderOpenRouter
-	APITokenProvider  = "whisk"        // whisk ,elevenlabs
+	defaultAIProvider = ProviderOpenRouter // ProviderGemini or ProviderOpenRouter
+	APITokenProvider  = "whisk"            // whisk ,elevenlabs
 )
 
 type YtAutomation struct {
@@ -147,6 +147,7 @@ func main() {
 	http.HandleFunc("/generate-video/", yt.generateVideoHandler)                                     // step 6
 	http.HandleFunc("/scripts-chunks/", yt.getScriptAudiosHandler)
 	http.HandleFunc("/health", yt.healthHandler)
+	http.HandleFunc("/check-missing-srt-ranges", yt.checkMissingSRTRangesHandler)
 	http.HandleFunc("/channels/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		if strings.HasSuffix(path, "/scripts") {
@@ -792,7 +793,7 @@ func (yt *YtAutomation) generateSubtitleHandler(w http.ResponseWriter, r *http.R
 	}
 
 	// Split the script into chunks
-	chunks, err := splitSRTByDuration(srt, 1*time.Minute)
+	chunks, err := splitSRTByDuration(srt, 30*time.Second)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to split SRT into chunks: %v", err))
 		return

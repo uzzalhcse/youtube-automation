@@ -1,3 +1,4 @@
 Resume image generation state
 Stop getting Duplicate chunk_visual entry on each api call
 in video generation api images time duration is wrong .
+Add recursive api call vor missing srt range . make a new master prompt for it
